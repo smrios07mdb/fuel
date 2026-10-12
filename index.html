@@ -187,7 +187,7 @@ function seed(){
     {id:uid(),name:'Beef and pasta',items:[{foodId:id('Ground beef'),g:227},{foodId:id('Pasta'),g:225}]}
   ];
   return {v:1,foods,meals,log:{},weights:{},health:{},
-    targets:{kcal:2600,p:190,c:290,f:75,mode:'g',pp:30,pc:45,pf:25},
+    targets:{kcal:2600,p:190,c:290,f:75,mode:'g',pp:30,pc:45,pf:25,goal:'custom'},
     profile:{sex:'m',age:35,heightCm:178,activity:1.55},
     settings:{unit:'lb',usdaKey:'',branded:false}};
 }
@@ -268,6 +268,7 @@ function parseHealth(text){
 
 /* ---------- views ---------- */
 function render(){
+  syncGoal();
   document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===ui.tab));
   $('#app').innerHTML=({today:vToday,foods:vFoods,weight:vWeight,settings:vSettings})[ui.tab]();
   if(ui.tab==='weight')bindChart();
@@ -396,6 +397,17 @@ function vWeight(){
   </div></div>`;
   return h;
 }
+const GOALS=[['lose','Lose',-500],['maintain','Maintain',0],['bulk','Bulk',500],['custom','Custom',null]];
+function setKcal(k){ // keeps protein and fat grams, carbs absorb the change
+  const T=S.targets;k=Math.round(k/10)*10;if(k===T.kcal)return false;
+  if(T.mode==='pct'){T.kcal=k;applyPct();return true}
+  T.c=Math.max(0,r0((k-T.p*4-T.f*9)/4));T.kcal=k;return true;
+}
+function syncGoal(){
+  const T=S.targets,g=GOALS.find(x=>x[0]===T.goal);if(!g||g[2]===null)return;
+  const td=tdee();if(!td.best)return;
+  if(setKcal(td.best+g[2]))save();
+}
 function applyPct(){const T=S.targets;T.p=r0(T.kcal*T.pp/100/4);T.c=r0(T.kcal*T.pc/100/4);T.f=r0(T.kcal*T.pf/100/9)}
 function targetNote(){
   const T=S.targets,td=tdee(),tail=td.best?' Estimated TDEE is '+fmt(td.best)+'.':'';
@@ -407,6 +419,8 @@ function vSettings(){
   const fld=(label,path,val,extra='')=>`<label class="field"><span class="micro">${label}</span><input data-set="${path}" inputmode="decimal" value="${esc(val)}" ${extra}></label>`;
   return `<div class="top"><div><div class="micro">Setup</div><h1>Settings</h1></div></div>
   <div class="sec">${sech('01','Daily targets')}<div class="stack">
+    <div class="seg">${GOALS.map(([k,l])=>`<button data-a="goal" data-g="${k}" class="${(T.goal||'custom')===k?'on':''}">${l}</button>`).join('')}</div>
+    <p class="note">${T.goal&&T.goal!=='custom'?(td.best?'Kcal = TDEE '+fmt(td.best)+(T.goal==='lose'?' − 500':T.goal==='bulk'?' + 500':'')+', updates as TDEE changes. Protein and fat stay fixed; carbs absorb the difference.':'No TDEE yet. Add a weight or paste Health data.'):'Kcal is whatever you type below.'}</p>
     <div class="seg"><button data-a="tmode" data-m="g" class="${T.mode!=='pct'?'on':''}">Grams</button><button data-a="tmode" data-m="pct" class="${T.mode==='pct'?'on':''}">Percent of calories</button></div>
     <div class="grid4">${fld('Kcal','targets.kcal',T.kcal)}${T.mode==='pct'?fld('Protein %','targets.pp',T.pp)+fld('Carbs %','targets.pc',T.pc)+fld('Fat %','targets.pf',T.pf):fld('Protein g','targets.p',T.p)+fld('Carbs g','targets.c',T.c)+fld('Fat g','targets.f',T.f)}</div>
     <p class="note" id="macronote">${targetNote()}</p>
@@ -610,6 +624,7 @@ const A={
   },
   delW(d,el){if(!twoTap(el.querySelector('.k'),'w'+d.k,'Tap to delete'))return;delete S.weights[d.k];save();render()},
   range(d){ui.range=+d.n;render()},
+  goal(d){const T=S.targets;T.goal=d.g;save();render()},
   tmode(d){
     const T=S.targets;if(T.mode===d.m)return;
     if(d.m==='pct'){const k=T.p*4+T.c*4+T.f*9;if(k){T.pp=r0(T.p*400/k);T.pc=r0(T.c*400/k);T.pf=100-T.pp-T.pc}applyPct()}
@@ -675,6 +690,7 @@ document.addEventListener('change',ev=>{
   if(!t.dataset.set)return;
   const[a,b]=t.dataset.set.split('.');
   S[a][b]=t.dataset.bool?t.value==='1':t.dataset.str?t.value.trim():num(t.value);save();
+  if(a==='targets'&&b==='kcal'&&S.targets.goal!=='custom'){S.targets.goal='custom';save();render();return}
   if(a==='targets'){if(S.targets.mode==='pct'){applyPct();save()}const n=$('#macronote');if(n)n.textContent=targetNote()}
 });
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&ui.tab==='today'&&!document.body.classList.contains('sheet')&&ui.date!==today()&&ui._seen!==today()){ui._seen=today();ui.date=today();render()}});
