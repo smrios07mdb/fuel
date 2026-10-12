@@ -362,18 +362,21 @@ function parseLog(text,base){
       if(!u||/^(g|gr|grams?|ml)$/.test(u))g=v;else if(/^(oz|ounces?)$/.test(u))g=v*OZ;else if(/^(kg|kilograms?)$/.test(u))g=v*1000;else if(/^(lbs?|pounds?)$/.test(u))g=v*1000*KG_PER_LB;else cnt=v}
     const meal=findByName(S.meals.filter(m=>mealItems(m).length),name,false);
     if(meal&&!g){it.kind='meal';it.ref=meal;it.scale=cnt||1;const t=mealSum(meal);it.g=0;for(const x of ['kcal','p','c','f'])it[x]=t[x]*it.scale;continue}
+    let kc=mac(tail,'kcal|cal|cals|calories');const pr=mac(tail,'p|pro|protein'),cb=mac(tail,'c|carb|carbs'),ft=mac(tail,'f|fat|fats');
+    const given=!(kc===null&&pr===null&&cb===null&&ft===null),P=pr||0,C=cb||0,F=ft||0;if(given&&kc===null)kc=4*P+4*C+9*F;
+    const fits=gg=>gg>0&&!(kc*100/gg>900||(P+C+F)>gg*1.02);
     const f=findByName(S.foods,name,true);
     if(f){
       if(!g&&cnt){if(f.serving)g=cnt*f.serving.g;else{it.msg='Needs grams: no serving size saved';continue}}
       if(!g)g=lastGrams(f.id)||(f.serving?f.serving.g:0);
       if(g<=0||g>5000){it.msg='Amount missing';continue}
-      Object.assign(it,mkEntry(f,g),{kind:'food',ref:f,name:f.name,slot:it.slot});continue;
+      Object.assign(it,mkEntry(f,g),{kind:'food',ref:f,name:f.name,slot:it.slot});
+      if(given&&fits(g))Object.assign(it,{kcal:kc,p:P,c:C,f:F,own:true}); // pasted macros win for this entry; the library is untouched
+      continue;
     }
-    let kc=mac(tail,'kcal|cal|cals|calories');const pr=mac(tail,'p|pro|protein'),cb=mac(tail,'c|carb|carbs'),ft=mac(tail,'f|fat|fats');
-    if(kc===null&&pr===null&&cb===null&&ft===null){it.msg='Not in your ingredients and no macros given';continue}
+    if(!given){it.msg='Not in your ingredients and no macros given';continue}
     if(g<=0||g>5000){it.msg='New food needs an amount in grams';continue}
-    const P=pr||0,C=cb||0,F=ft||0;if(kc===null)kc=4*P+4*C+9*F;
-    if(kc*100/g>900||(P+C+F)>g*1.02){it.msg='Macros do not fit '+r0(g)+' g';continue}
+    if(!fits(g)){it.msg='Macros do not fit '+r0(g)+' g';continue}
     Object.assign(it,{kind:'new',g,kcal:kc,p:P,c:C,f:F,name:name.charAt(0).toUpperCase()+name.slice(1)});
   }
   return out;
@@ -382,7 +385,7 @@ function commitLog(items){ // returns {n: entries added, nf: new ingredients}
   let n=0,nf=0;
   for(const it of items){
     if(it.kind==='meal'){const es=mealItems(it.ref).filter(i=>i.g>0).map(i=>mkEntry(food(i.foodId),r1(i.g*it.scale),it.slot,it.ref.name));day(it.k).entries.push(...es);n+=es.length}
-    else if(it.kind==='food'){day(it.k).entries.push(mkEntry(it.ref,r1(it.g),it.slot));n++}
+    else if(it.kind==='food'){const e=mkEntry(it.ref,r1(it.g),it.slot);if(it.own)Object.assign(e,{kcal:it.kcal,p:it.p,c:it.c,f:it.f});day(it.k).entries.push(e);n++}
     else if(it.kind==='new'){
       let f=findByName(S.foods,it.name,false);
       if(!f){const s=100/it.g;f={id:uid(),name:it.name,kcal:r1(it.kcal*s),p:r1(it.p*s),c:r1(it.c*s),f:r1(it.f*s),serving:null,src:'est'};S.foods.push(f);nf++}
@@ -1012,7 +1015,7 @@ function openPaste(text){
   sheet('Paste',`<div class="stack"><label class="field"><span class="micro">Log lines from Claude, or Health lines</span><textarea id="pl" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="lunch | chicken breast | 180 g&#10;dinner | salmon, baked | 170 g | kcal=350 p=37 c=0 f=21&#10;2026-10-11 active=612 resting=1890">${esc(ctx.paste.text)}</textarea></label>
   <div id="plout">${pasteOut()}</div>
   <div class="btns"><button class="btn" data-a="copyPrompt">Copy Shortcut prompt</button><button class="btn" data-a="healthManual">Enter burn</button></div>
-  <p class="note" style="margin:0">Saved ingredients and meals use your macros. Anything else is added as a new ingredient with Claude’s estimate. Health lines update burn and weight.</p></div>`,'Add to '+niceDate(ui.date));
+  <p class="note" style="margin:0">Pasted macros are used as given. Saved ingredients without macros, and saved meals, use your library. Anything else is added as a new ingredient with Claude’s estimate. Health lines update burn and weight.</p></div>`,'Add to '+niceDate(ui.date));
 }
 function pasteOut(){
   const txt=ctx.paste.text,items=parseLog(txt,ui.date),ok=items.filter(i=>i.kind!=='err'),hs=readHealth(txt);
@@ -1020,7 +1023,7 @@ function pasteOut(){
   const tag={meal:'saved meal',food:'saved ingredient',new:'new · estimate'},t=sum(ok),u=wUnit();
   const hrow=o=>`<div class="row"><span class="nm">Apple Health<small>${shortDate(o.k)}${o.active!=null?' · active '+fmt(o.active)+' · resting '+fmt(o.resting):''}${o.kg!=null&&o.active!=null?' · weight '+r1(toDisp(o.kg))+' '+u:''}</small></span><span class="k">${o.active!=null?fmt(o.active+o.resting)+'<small>kcal burn</small>':r1(toDisp(o.kg))+'<small>'+u+' weigh-in</small>'}</span></div>`;
   const label=ok.length?'Add '+ok.length+' item'+(ok.length>1?'s':'')+' · '+fmt(t.kcal)+' kcal'+(hs.length?' + Health':''):hs.length?'Import Health data':'Nothing to add';
-  return `<div class="card list" style="padding:0;overflow:hidden;margin-bottom:12px">${items.map(i=>`<div class="row"><span class="nm">${esc(i.name)}<small class="${i.kind==='err'?'bad':''}">${i.kind==='err'?esc(i.msg):esc(i.slot)+(i.k!==ui.date?' · '+shortDate(i.k):'')+' · '+(i.kind==='meal'?i.scale+'×':r0(i.g)+' g')+' · '+tag[i.kind]}</small></span><span class="k">${i.kind==='err'?'<small>skipped</small>':fmt(i.kcal)+`<small>P ${r0(i.p)} · C ${r0(i.c)} · F ${r0(i.f)}</small>`}</span></div>`).join('')}${hs.map(hrow).join('')}</div>
+  return `<div class="card list" style="padding:0;overflow:hidden;margin-bottom:12px">${items.map(i=>`<div class="row"><span class="nm">${esc(i.name)}<small class="${i.kind==='err'?'bad':''}">${i.kind==='err'?esc(i.msg):esc(i.slot)+(i.k!==ui.date?' · '+shortDate(i.k):'')+' · '+(i.kind==='meal'?i.scale+'×':r0(i.g)+' g')+' · '+(i.own?'saved · pasted macros':tag[i.kind])}</small></span><span class="k">${i.kind==='err'?'<small>skipped</small>':fmt(i.kcal)+`<small>P ${r0(i.p)} · C ${r0(i.c)} · F ${r0(i.f)}</small>`}</span></div>`).join('')}${hs.map(hrow).join('')}</div>
   <button class="btn pri full" data-a="plOk" ${ok.length||hs.length?'':'disabled'}>${label}</button>`;
 }
 async function openSnaps(){

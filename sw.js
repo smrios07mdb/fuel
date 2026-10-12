@@ -1,5 +1,5 @@
 // Fuel service worker: app shell works offline, updates land on the next open.
-const CACHE = 'fuel-v6';
+const CACHE = 'fuel-v7';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
