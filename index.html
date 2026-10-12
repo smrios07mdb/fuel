@@ -187,7 +187,7 @@ function seed(){
     {id:uid(),name:'Beef and pasta',items:[{foodId:id('Ground beef'),g:227},{foodId:id('Pasta'),g:225}]}
   ];
   return {v:1,foods,meals,log:{},weights:{},health:{},
-    targets:{kcal:2600,p:190,c:290,f:75},
+    targets:{kcal:2600,p:190,c:290,f:75,mode:'g',pp:30,pc:45,pf:25},
     profile:{sex:'m',age:35,heightCm:178,activity:1.55},
     settings:{unit:'lb',usdaKey:'',branded:false}};
 }
@@ -396,13 +396,20 @@ function vWeight(){
   </div></div>`;
   return h;
 }
+function applyPct(){const T=S.targets;T.p=r0(T.kcal*T.pp/100/4);T.c=r0(T.kcal*T.pc/100/4);T.f=r0(T.kcal*T.pf/100/9)}
+function targetNote(){
+  const T=S.targets,td=tdee(),tail=td.best?' Estimated TDEE is '+fmt(td.best)+'.':'';
+  if(T.mode==='pct'){const sm=r1(T.pp+T.pc+T.pf);return 'Targets: protein '+T.p+' g, carbs '+T.c+' g, fat '+T.f+' g.'+(sm!==100?' Split adds up to '+sm+'%, not 100%.':'')+tail}
+  const k=T.p*4+T.c*4+T.f*9;return 'Macros add up to '+fmt(k)+' kcal: '+(k?r0(T.p*400/k)+'% protein, '+r0(T.c*400/k)+'% carbs, '+r0(T.f*900/k)+'% fat.':'')+tail;
+}
 function vSettings(){
   const T=S.targets,P=S.profile,st=S.settings,macroK=T.p*4+T.c*4+T.f*9,td=tdee();
   const fld=(label,path,val,extra='')=>`<label class="field"><span class="micro">${label}</span><input data-set="${path}" inputmode="decimal" value="${esc(val)}" ${extra}></label>`;
   return `<div class="top"><div><div class="micro">Setup</div><h1>Settings</h1></div></div>
   <div class="sec">${sech('01','Daily targets')}<div class="stack">
-    <div class="grid4">${fld('Kcal','targets.kcal',T.kcal)}${fld('Protein','targets.p',T.p)}${fld('Carbs','targets.c',T.c)}${fld('Fat','targets.f',T.f)}</div>
-    <p class="note" id="macronote">Macros add up to ${fmt(macroK)} kcal.${td.best?' Estimated TDEE is '+fmt(td.best)+'.':''}</p>
+    <div class="seg"><button data-a="tmode" data-m="g" class="${T.mode!=='pct'?'on':''}">Grams</button><button data-a="tmode" data-m="pct" class="${T.mode==='pct'?'on':''}">Percent of calories</button></div>
+    <div class="grid4">${fld('Kcal','targets.kcal',T.kcal)}${T.mode==='pct'?fld('Protein %','targets.pp',T.pp)+fld('Carbs %','targets.pc',T.pc)+fld('Fat %','targets.pf',T.pf):fld('Protein g','targets.p',T.p)+fld('Carbs g','targets.c',T.c)+fld('Fat g','targets.f',T.f)}</div>
+    <p class="note" id="macronote">${targetNote()}</p>
   </div></div>
   <div class="sec">${sech('02','Profile')}<div class="stack">
     <div class="grid2"><label class="field"><span class="micro">Sex</span><select data-set="profile.sex" data-str="1"><option value="m" ${P.sex==='m'?'selected':''}>Male</option><option value="f" ${P.sex==='f'?'selected':''}>Female</option></select></label>${fld('Age','profile.age',P.age)}</div>
@@ -603,6 +610,11 @@ const A={
   },
   delW(d,el){if(!twoTap(el.querySelector('.k'),'w'+d.k,'Tap to delete'))return;delete S.weights[d.k];save();render()},
   range(d){ui.range=+d.n;render()},
+  tmode(d){
+    const T=S.targets;if(T.mode===d.m)return;
+    if(d.m==='pct'){const k=T.p*4+T.c*4+T.f*9;if(k){T.pp=r0(T.p*400/k);T.pc=r0(T.c*400/k);T.pf=100-T.pp-T.pc}applyPct()}
+    T.mode=d.m;save();render();
+  },
   seg(d){ui.seg=d.s;ui.q='';render()},
   newFood(){openFood(null,document.body.classList.contains('sheet')&&ctx.pick?'pick':null)},
   editFood(d){ctx.pick=null;openFood(food(d.id),null)},
@@ -663,7 +675,7 @@ document.addEventListener('change',ev=>{
   if(!t.dataset.set)return;
   const[a,b]=t.dataset.set.split('.');
   S[a][b]=t.dataset.bool?t.value==='1':t.dataset.str?t.value.trim():num(t.value);save();
-  if(a==='targets'){const T=S.targets,n=$('#macronote'),td=tdee();if(n)n.textContent='Macros add up to '+fmt(T.p*4+T.c*4+T.f*9)+' kcal.'+(td.best?' Estimated TDEE is '+fmt(td.best)+'.':'')}
+  if(a==='targets'){if(S.targets.mode==='pct'){applyPct();save()}const n=$('#macronote');if(n)n.textContent=targetNote()}
 });
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&ui.tab==='today'&&!document.body.classList.contains('sheet')&&ui.date!==today()&&ui._seen!==today()){ui._seen=today();ui.date=today();render()}});
 
