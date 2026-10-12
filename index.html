@@ -86,6 +86,7 @@ h1{font-family:var(--serif);font-weight:400;font-size:40px;line-height:1;margin:
 .field textarea{width:100%;height:132px;background:var(--s2);border:1px solid var(--line);border-radius:11px;padding:10px 12px;font-size:13px;line-height:1.45;font-family:var(--mono);color:var(--text);outline:none;resize:none;-webkit-appearance:none;appearance:none}
 .field textarea:focus{border-color:var(--acc)}
 .row .nm small.bad{color:var(--warn)}
+.note.warn{color:var(--warn)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
 .stack{display:flex;flex-direction:column;gap:12px}
@@ -205,20 +206,23 @@ function seed(){
     {id:uid(),name:'Beef and pasta',items:[{foodId:id('Ground beef'),g:227},{foodId:id('Pasta'),g:225}]}
   ];
   return {v:1,foods,meals,days:[],meta:{lastBackup:0,snooze:''},log:{},weights:{},health:{},
-    targets:{kcal:2600,p:190,c:290,f:75,mode:'g',pp:30,pc:45,pf:25,goal:'custom'},
+    targets:{kcal:2600,p:190,c:290,f:75,mode:'g',pp:30,pc:45,pf:25,goal:'custom',goalKg:0},
     profile:{sex:'m',age:35,heightCm:178,activity:1.55},
     settings:{unit:'lb',usdaKey:'',branded:false}};
 }
-let S;
+let S,fresh=false,snapT=0;
 function load(){
   try{S=JSON.parse(localStorage.getItem(LS))}catch(e){S=null}
-  if(!S||!S.foods){S=seed();save()}
+  if(!S||!S.foods){S=seed();fresh=true;save()}
   const d=seed();
   for(const k of ['targets','profile','settings','meta'])S[k]=Object.assign({},d[k],S[k]||{});
   for(const k of ['log','weights','health'])S[k]=S[k]||{};
   S.meals=S.meals||[];S.days=S.days||[];
 }
-function save(){try{localStorage.setItem(LS,JSON.stringify(S))}catch(e){toast('Could not save: storage full or blocked')}}
+function save(){
+  try{localStorage.setItem(LS,JSON.stringify(S))}catch(e){toast('Could not save: storage full or blocked')}
+  clearTimeout(snapT);snapT=setTimeout(()=>snapshot().catch(()=>{}),1500);
+}
 const monday=k=>addDays(k,-((parseD(k).getDay()+6)%7));
 const ui={tab:'today',date:today(),seg:'foods',q:'',range:90,week:monday(today()),gen:false};
 
@@ -293,30 +297,39 @@ const DAY_MS=864e5;
 const backupAge=()=>S.meta.lastBackup?Math.floor((Date.now()-S.meta.lastBackup)/DAY_MS):null;
 function backupDue(){const a=backupAge(),has=Object.keys(S.log).some(k=>entries(k).length)||Object.keys(S.weights).length>0;return has&&(a===null||a>=7)&&S.meta.snooze!==today()}
 function lastGrams(fid){const ks=Object.keys(S.log).sort().reverse();for(const k of ks){const es=entries(k);for(let i=es.length-1;i>=0;i--)if(es[i].foodId===fid)return es[i].g}return 0}
-function parseHealth(text){ // lines: yyyy-MM-dd active=N resting=N weight=N (any subset); returns {n: burn days, w: weigh-ins}
-  let n=0,w=0;const NUM='(\\d+(?:[.,]\\d+)?)';
+function readHealth(text){ // lines: yyyy-MM-dd active=N resting=N weight=N (any subset), or two bare numbers for yesterday
+  const out=[],NUM='(\\d+(?:[.,]\\d+)?)';
   for(const line of String(text).split(/\r?\n/)){
-    if(!line.trim())continue;
-    const dm=line.match(/\d{4}-\d{2}-\d{2}/);const k=dm?dm[0]:addDays(today(),-1);
+    if(!line.trim()||line.includes('|'))continue;
+    const dm=line.match(/\d{4}-\d{2}-\d{2}/),k=dm?dm[0]:addDays(today(),-1);
     if(k>today())continue;
-    let rest=line.replace(/\d{4}-\d{2}-\d{2}/,' ');
+    let rest=line.replace(/\d{4}-\d{2}-\d{2}/,' ');const o={k};
     const wm=rest.match(new RegExp('weight\\s*[=:]?\\s*'+NUM+'\\s*(kg|kilograms?|lbs?|pounds?)?','i'));
     const hasW=/weight/i.test(rest);
     if(wm){
       const v=num(wm[1]),u=(wm[2]||'').toLowerCase(),kg=u?(u[0]==='k'?v:v*KG_PER_LB):fromDisp(v);
-      if(kg>=25&&kg<=320){S.weights[k]=Math.round(kg*1000)/1000;w++}
+      if(kg>=25&&kg<=320)o.kg=Math.round(kg*1000)/1000;
       rest=rest.replace(wm[0],' ');
     }
     rest=rest.replace(/weight\s*[=:]?/i,' ');
     const a=rest.match(new RegExp('active\\s*[=:]?\\s*'+NUM,'i')),r=rest.match(new RegExp('resting\\s*[=:]?\\s*'+NUM,'i'));
-    let active,resting;
+    let active=0,resting=0;
     if(a||r){active=a?num(a[1]):0;resting=r?num(r[1]):0}
-    else{if(hasW||/active|resting/i.test(rest))continue;const ns=(rest.match(/\d+(?:\.\d+)?/g)||[]).map(num);if(!ns.length)continue;active=ns[0];resting=ns[1]||0}
-    if(active+resting<=0||active+resting>20000)continue;
-    S.health[k]={active:r0(active),resting:r0(resting)};n++;
+    else if(!hasW&&!/active|resting/i.test(rest)){ // bare form: exactly two numbers and nothing else, so stray clipboard text is never read as burn
+      const m=rest.match(new RegExp('^[\\s,;:]*'+NUM+'[\\s,;/]+'+NUM+'[\\s,;]*$'));
+      if(m&&num(m[1])+num(m[2])>=500){active=num(m[1]);resting=num(m[2])}
+    }
+    if(active+resting>0&&active+resting<=20000){o.active=r0(active);o.resting=r0(resting)}
+    if(o.kg!=null||o.active!=null)out.push(o);
   }
+  return out;
+}
+function applyHealth(rows){ // returns {n: burn days, w: weigh-ins}
+  let n=0,w=0;
+  for(const o of rows){if(o.kg!=null){S.weights[o.k]=o.kg;w++}if(o.active!=null){S.health[o.k]={active:o.active,resting:o.resting};n++}}
   if(n||w)save();return {n,w};
 }
+const parseHealth=text=>applyHealth(readHealth(text));
 const healthMsg=r=>'Imported '+[r.n?r.n+' day'+(r.n>1?'s':'')+' of burn':'',r.w?r.w+' weigh-in'+(r.w>1?'s':''):''].filter(Boolean).join(' and ');
 
 /* paste log: one food per line, slot | name | amount | kcal=N p=N c=N f=N (macros are for the amount eaten) */
@@ -392,6 +405,118 @@ function logPrompt(){
   'My ingredients:',foods||'- (none)','','My meals:',meals||'- (none)','','What I ate:',''].join('\n');
 }
 
+/* snapshots: rolling copies in IndexedDB, one per day plus one before each erase, import or restore */
+const SNAP_AUTO=7,SNAP_PRE=3;
+const hasData=()=>Object.keys(S.log).some(k=>entries(k).length)||Object.keys(S.weights).length>0||Object.keys(S.health).length>0;
+function idb(mode,fn){
+  return new Promise((res,rej)=>{
+    let rq;try{rq=indexedDB.open('fuel',1)}catch(e){return rej(e)}
+    rq.onupgradeneeded=()=>rq.result.createObjectStore('snaps',{keyPath:'k'});
+    rq.onerror=()=>rej(rq.error);
+    rq.onsuccess=()=>{const db=rq.result;let out;
+      try{const tx=db.transaction('snaps',mode);out=fn(tx.objectStore('snaps'));tx.oncomplete=()=>{db.close();res(out&&out.result)};tx.onerror=tx.onabort=()=>{db.close();rej(tx.error)}}
+      catch(e){db.close();rej(e)}};
+  });
+}
+const snapList=async()=>((await idb('readonly',st=>st.getAll()))||[]).sort((a,b)=>b.t-a.t);
+async function snapshot(why){
+  if(!hasData())return;
+  const rec={k:why?'pre-'+Date.now():'auto-'+today(),t:Date.now(),why:why||'',days:Object.keys(S.log).filter(k=>entries(k).length).length,data:JSON.stringify(S)};
+  await idb('readwrite',st=>st.put(rec));
+  const all=await snapList(),drop=all.filter(x=>x.why).slice(SNAP_PRE).concat(all.filter(x=>!x.why).slice(SNAP_AUTO));
+  if(drop.length)await idb('readwrite',st=>{drop.forEach(x=>st.delete(x.k))});
+  snapInfo();
+}
+async function snapInfo(){
+  try{ui.snaps=await snapList()}catch(e){ui.snaps=null}
+  try{ui.persisted=navigator.storage&&navigator.storage.persisted?await navigator.storage.persisted():null}catch(e){ui.persisted=null}
+  const el=$('#snapinfo');if(el)el.innerHTML=snapKv();
+}
+const snapWhen=x=>shortDate(ymd(new Date(x.t)))+', '+new Date(x.t).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+async function restoreSnap(rec){
+  let j;try{j=JSON.parse(rec.data);if(!Array.isArray(j.foods)||typeof j.log!=='object')throw 0}catch(e){return toast('That snapshot cannot be read')}
+  try{await snapshot('before restore')}catch(e){}
+  S=j;save();load();ui.recover=null;closeSheet();render();toast('Restored snapshot from '+snapWhen(rec));
+}
+
+/* what fits: recent foods and saved meals that fit the kcal left, best protein cover first */
+function fits(k){
+  const t=sum(entries(k)),T=S.targets,L=T.kcal-t.kcal,P=Math.max(0,T.p-t.p),out=[];
+  if(L<50)return {L,P,out};
+  const used=usage(null),pool=used.length?used:S.foods.filter(f=>f.serving);
+  pool.forEach((f,i)=>{
+    if(!(f.kcal>0))return;
+    const g0=lastGrams(f.id)||(f.serving?f.serving.g:100);let g=g0;
+    if(P>=5&&f.p*4/f.kcal>=0.4)g=clamp(P/f.p*100,g0*0.5,g0*1.5); // protein-dense: size the portion to the protein gap
+    g=Math.min(g,L/f.kcal*100);
+    g=f.serving&&f.serving.g>0?Math.floor(g/f.serving.g+0.05)*f.serving.g:(g>=20?Math.floor(g/5)*5:Math.floor(g));
+    if(g<=0||g<g0*0.4)return;
+    const e=mkEntry(f,g);if(e.kcal>L*1.03)return;
+    out.push({f,g,kcal:e.kcal,p:e.p,c:e.c,fat:e.f,rank:i});
+  });
+  S.meals.forEach(m=>{
+    if(!mealItems(m).length)return;const ms=mealSum(m),scale=ms.kcal<=L?1:ms.kcal/2<=L?0.5:0;if(!scale||!ms.kcal)return;
+    out.push({m,scale,kcal:ms.kcal*scale,p:ms.p*scale,c:ms.c*scale,fat:ms.f*scale,rank:1.5});
+  });
+  const cover=o=>P>=5?Math.round(Math.min(1,o.p/P)*5):0;
+  out.sort((a,b)=>cover(b)-cover(a)||a.rank-b.rank);
+  return {L,P,out:out.slice(0,4)};
+}
+
+/* recipes: raw ingredients plus the cooked weight of the batch, saved as an ingredient per 100 g cooked */
+function recipeCalc(m){ // m: {items:[{foodId,g}],yield}
+  const its=m.items.filter(i=>food(i.foodId)),t=sum(its.map(i=>mkEntry(food(i.foodId),i.g))),raw=its.reduce((a,i)=>a+i.g,0),y=m.yield>0?m.yield:raw,sc=y?100/y:0;
+  return {t,raw,y,per:{kcal:t.kcal*sc,p:t.p*sc,c:t.c*sc,f:t.f*sc}};
+}
+function recalcRecipes(){ // an ingredient changed: refresh recipes built from it (past entries keep what they were logged with)
+  for(const f of S.foods){
+    const r=f.recipe;if(!r||!r.items.length||!r.items.every(i=>food(i.foodId)))continue;
+    const c=recipeCalc(r);if(!c.y)continue;f.kcal=r1(c.per.kcal);f.p=r1(c.per.p);f.c=r1(c.per.c);f.f=r1(c.per.f);
+  }
+}
+
+/* goal weight: projected date from the 28-day weight trend and from the plan */
+const longDate=k=>parseD(k).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+function goalInfo(){
+  const T=S.targets,td=tdee(),lw=latestWeight(),avg=avgW(today()),cur=avg!==null?avg:(lw?lw.kg:null),g=GOALS.find(x=>x[0]===T.goal);
+  const o={goal:T.goalKg||0,cur,isAvg:avg!==null,rate:td.kgPerDay,plan:g&&g[2]!==null?g[2]/KCAL_PER_KG:null,pct:null};
+  if(cur&&o.rate!==null)o.pct=-o.rate*7/cur*100;
+  const eta=r=>{
+    if(!o.goal||cur===null||r===null)return null;const rem=o.goal-cur;
+    if(Math.abs(rem)<0.25)return {done:true};
+    if(Math.abs(r)<0.004||Math.sign(r)!==Math.sign(rem))return {away:true};
+    const days=Math.ceil(rem/r);return days>730?{far:true}:{days,date:addDays(today(),days)};
+  };
+  o.trendEta=eta(o.rate);o.planEta=eta(o.plan);return o;
+}
+const etaText=e=>!e?'—':e.done?'At goal':e.away?'Not heading there':e.far?'Over 2 years':longDate(e.date)+' · '+(e.days<14?e.days+' d':Math.round(e.days/7)+' wk');
+
+/* week summary as plain text, for pasting into Claude */
+function weekText(start){
+  const s=weekStats(start),T=S.targets,td=s.td,u=wUnit(),dp=u==='lb'?1:2,f=td.calibrated?td.factor:1;
+  const pace=kg=>kg===null?'n/a':signed(toDisp(kg),dp)+' '+u+'/wk',pl=(n,w)=>n+' '+w+(n===1?'':'s');
+  const gname=(GOALS.find(x=>x[0]===T.goal)||[])[1]||'Custom',a=avgW(s.end),b=avgW(addDays(start,-1)),gi=goalInfo(),L=[];
+  L.push('Fuel week summary: '+longDate(start)+' to '+longDate(s.all[6])+' ('+s.days.length+' of 7 days elapsed)');
+  L.push('Goal: '+gname+' · target '+fmt(T.kcal)+' kcal, P '+r0(T.p)+' / C '+r0(T.c)+' / F '+r0(T.f)+' g · estimated TDEE '+(td.best?fmt(td.best)+' ('+td.source+')':'n/a'));
+  L.push('Intake: '+(s.intake!==null?'avg '+fmt(s.intake)+' kcal on '+pl(s.comp.length,'complete day')+', '+signedK(s.intake-T.kcal)+' vs target · protein avg '+r0(s.protein)+' g':'no complete days'));
+  if(s.intakeAll!==null)L.push('All logged days incl. open: avg '+fmt(s.intakeAll)+' kcal over '+pl(s.logged.length,'day'));
+  L.push('Burn: '+(s.burn!==null?'avg '+fmt(s.burn)+' kcal/day over '+pl(s.burnDays,'day')+', Apple Health'+(td.calibrated?' × '+td.factor.toFixed(2)+' correction':', uncalibrated'):'no data'));
+  L.push('Weight: '+(a!==null?'7-day avg '+r1(toDisp(a))+' '+u+(b!==null?', '+r1(toDisp(b))+' '+u+' at the end of the prior week':''):'not enough weigh-ins for an average')+' · '+pl(s.weighIns,'weigh-in')+' this week');
+  L.push('Pace: plan '+pace(s.planKg)+' · implied by intake − burn '+pace(s.expKg)+(s.expKg!==null?' ('+s.bothN+' d)':'')+' · scale '+pace(s.actKg));
+  if(gi.goal&&gi.cur!==null)L.push('Goal weight: '+r1(toDisp(gi.goal))+' '+u+', '+signed(toDisp(gi.goal-gi.cur),1)+' '+u+' to go · at 28-day trend ('+pace(gi.rate===null?null:gi.rate*7)+'): '+etaText(gi.trendEta)+' · at plan pace: '+etaText(gi.planEta));
+  L.push('Calibration: '+td.complete+' complete days with burn in the last '+WINDOW+' ('+MIN_COMPLETE+' needed) · '+(td.calibrated?'correction × '+td.factor.toFixed(2):'correction pending'));
+  L.push('','Days:');
+  const by={};let tot=0;
+  for(const k of s.days){
+    const es=entries(k),t=sum(es),h=healthTotal(k),w=S.weights[k];
+    for(const e of es){by[e.name]=(by[e.name]||0)+e.kcal;tot+=e.kcal}
+    L.push(parseD(k).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})+': '+(es.length?fmt(t.kcal)+' kcal · P '+r0(t.p)+' C '+r0(t.c)+' F '+r0(t.f):'nothing logged')+' · burn '+(h?fmt(h*f):'n/a')+(w!=null?' · '+r1(toDisp(w))+' '+u:'')+' · '+(isComplete(k)?'complete':es.length?'open':'empty'));
+  }
+  const top=Object.keys(by).sort((x,y)=>by[y]-by[x]).slice(0,5);
+  if(top.length)L.push('','Top foods by kcal: '+top.map(n=>n+' '+fmt(by[n])+' ('+r0(by[n]/tot*100)+'%)').join(', '));
+  return L.join('\n');
+}
+
 /* ---------- views ---------- */
 function render(){
   syncGoal();
@@ -412,7 +537,8 @@ function mrow(label,v,target,color){
 const notice=(text,btns)=>`<div class="notice"><span>${text}</span>${btns}</div>`;
 function notices(){
   const y=addDays(today(),-1);let h='';
-  if(Object.keys(S.health).length&&!healthTotal(y))h+=notice('Yesterday’s burn is not imported.','<button class="btn sm pri" data-a="pasteHealth">Import</button>');
+  if(ui.recover)h+=notice('This phone has no data, but a snapshot from '+snapWhen(ui.recover)+' exists.','<button class="btn sm pri" data-a="recover">Restore</button><button class="btn sm" data-a="recoverNo">Dismiss</button>');
+  if(Object.keys(S.health).length&&!healthTotal(y))h+=notice('Yesterday’s burn is not imported.','<button class="btn sm pri" data-a="paste">Paste</button>');
   if(entries(y).length&&!S.log[y].complete)h+=notice('Yesterday is not marked complete.',`<button class="btn sm" data-a="goDay" data-k="${y}">Open</button>`);
   if(backupDue()){const a=backupAge();h+=notice(a===null?'No backup yet.':'Last backup '+a+' days ago.','<button class="btn sm pri" data-a="export">Back up</button><button class="btn sm" data-a="snooze">Later</button>')}
   return h?`<div class="notices">${h}</div>`:'';
@@ -421,18 +547,20 @@ function vToday(){
   const k=ui.date,t=sum(entries(k)),T=S.targets,isToday=k===today(),d=S.log[k]||{};
   const td=tdee(),hb=healthTotal(k),burn=hb?(td.calibrated?hb*td.factor:hb):0;
   const left=T.kcal-t.kcal,w=S.weights[k];
+  let sn=0;const no=()=>z2(++sn);
   let h=`<div class="top"><div><div class="micro">${isToday?'Today':dayDiff(k,today())===1?'Yesterday':'Past day'}</div><h1>${niceDate(k)}</h1></div>
   <div class="datenav"><button data-a="day" data-n="-1" aria-label="Previous day">‹</button><button data-a="day" data-n="1" aria-label="Next day" ${isToday?'disabled':''}>›</button></div></div>`;
   if(isToday)h+=notices();
-  h+=`<div class="sec">${sech('01','Energy',d.complete?'<span class="chip on">Complete</span>':'')}
+  h+=`<div class="sec">${sech(no(),'Energy',d.complete?'<span class="chip on">Complete</span>':'')}
   <div class="energy">${ring(t.kcal,T.kcal)}<div class="macros">${mrow('Protein',t.p,T.p,'var(--mint)')}${mrow('Carbs',t.c,T.c,'var(--blue)')}${mrow('Fat',t.f,T.f,'var(--cream)')}</div></div>
   <div class="stats">
     <div class="stat"><div class="micro">${left>=0?'Left':'Over'}</div><div class="v" style="${left<0?'color:var(--warn)':''}">${fmt(Math.abs(left))}</div></div>
     <div class="stat"><div class="micro">Burn</div><div class="v">${burn?fmt(burn):'<small>no data</small>'}</div></div>
     <div class="stat"><div class="micro">Net</div><div class="v">${burn?(t.kcal-burn>0?'+':'')+fmt(t.kcal-burn):'<small>n/a</small>'}</div></div>
   </div></div>`;
-  h+=`<div class="sec">${sech('02','Meals',entries(k).length+' items')}`;
-  h+=`<button class="btn full" data-a="pasteLog" style="margin-bottom:10px">Paste log</button>`;
+  h+=fitSec(k,no);
+  h+=`<div class="sec">${sech(no(),'Meals',entries(k).length+' items')}`;
+  h+=`<button class="btn full" data-a="paste" style="margin-bottom:10px">Paste · log or Health</button>`;
   for(const s of SLOTS){
     const es=entries(k).filter(e=>e.slot===s),st=sum(es),rp=es.length?null:lastSlot(s,k);
     h+=`<div class="slot"><div class="card"><div class="sloth"><span class="nm">${s}</span><span class="k">${es.length?fmt(st.kcal)+' kcal':''}</span><button class="plus" data-a="add" data-slot="${s}" aria-label="Add to ${s}">+</button></div>
@@ -441,16 +569,27 @@ function vToday(){
     </div></div>`;
   }
   h+=`</div>`;
-  h+=`<div class="sec">${sech('03','Day')}<div class="stack">
+  h+=`<div class="sec">${sech(no(),'Day')}<div class="stack">
     <div class="inline"><label class="field"><span class="micro">Weight (${wUnit()})</span><input id="wq" inputmode="decimal" placeholder="${w?'':'e.g. '+(wUnit()==='lb'?'185.4':'84.1')}" value="${w?r1(toDisp(w)):''}"></label><button class="btn" data-a="saveW" data-src="wq">Save</button></div>
     <button class="btn full ${d.complete?'':'pri'}" data-a="complete">${d.complete?'Marked complete · tap to undo':'Mark day complete'}</button>
     <div class="btns"><button class="btn" data-a="copyPrev">Copy previous day</button><button class="btn" data-a="days">Usual days</button></div>
-    <button class="btn full" data-a="pasteHealth">Import from Health</button>
     <p class="note">Mark a day complete only when everything you ate is logged. Complete days are the only ones used to calibrate your burn.</p>
   </div></div>`;
   return h;
 }
-function foodRow(f,act){return `<button class="row" data-a="${act}" data-id="${f.id}"><span class="nm">${esc(f.name)}<small>${act==='editFood'&&f.src==='seed'?'generic · ':act==='editFood'&&f.src==='est'?'estimate · ':''}per 100 g · P ${r1(f.p)} · C ${r1(f.c)} · F ${r1(f.f)}${f.serving?' · '+esc(f.serving.label)+' '+r0(f.serving.g)+' g':''}</small></span><span class="k">${fmt(f.kcal)}<small>kcal</small></span></button>`}
+const kv=(k,v)=>`<div class="kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+function fitSec(k,no){
+  const d=S.log[k]||{};if(k!==today()||d.complete||!entries(k).length)return '';
+  const r=fits(k);if(r.L<50)return '';
+  const row=o=>{
+    const nm=esc(o.m?o.m.name:o.f.name),key=o.m?`data-m="${o.m.id}" data-s="${o.scale}"`:`data-f="${o.f.id}" data-g="${o.g}"`,amt=o.m?(o.scale===1?'1×':'½×'):r0(o.g)+' g';
+    return `<div class="row split"><button class="main" data-a="fitOpen" ${key}><span class="nm">${nm}<small>${o.m?'meal · ':''}${amt} · P ${r0(o.p)} · C ${r0(o.c)} · F ${r0(o.fat)}</small></span><span class="k">${fmt(o.kcal)}<small>kcal</small></span></button><button class="q" data-a="fitAdd" ${key} aria-label="Add ${amt} of ${nm}">+ ${amt}</button></div>`;
+  };
+  return `<div class="sec">${sech(no(),'What fits',fmt(r.L)+' kcal · '+r0(r.P)+' g protein left')}
+  <div class="card list" style="padding:0;overflow:hidden">${r.out.length?r.out.map(row).join(''):'<div class="empty">Nothing in your recent foods or meals fits.</div>'}</div>
+  ${r.P*4>r.L?`<p class="note warn" style="margin:10px 0 0">The protein gap alone is ${fmt(r.P*4)} kcal, more than the ${fmt(r.L)} kcal left.</p>`:r.out.length?`<p class="note" style="margin:10px 0 0">Tap + to add to ${slotNow()}, or the name to change the amount.</p>`:''}</div>`;
+}
+function foodRow(f,act){return `<button class="row" data-a="${act}" data-id="${f.id}"><span class="nm">${esc(f.name)}<small>${f.src==='recipe'?'recipe · ':act==='editFood'&&f.src==='seed'?'generic · ':act==='editFood'&&f.src==='est'?'estimate · ':''}per 100 g · P ${r1(f.p)} · C ${r1(f.c)} · F ${r1(f.f)}${f.serving?' · '+esc(f.serving.label)+' '+r0(f.serving.g)+' g':''}</small></span><span class="k">${fmt(f.kcal)}<small>kcal</small></span></button>`}
 function mealRow(m,act){const t=mealSum(m);return `<button class="row" data-a="${act}" data-id="${m.id}"><span class="nm">${esc(m.name)}<small>${mealItems(m).length} items · P ${r0(t.p)} · C ${r0(t.c)} · F ${r0(t.f)}</small></span><span class="k">${fmt(t.kcal)}<small>kcal</small></span></button>`}
 const match=(name,q)=>{const n=name.toLowerCase();return q.toLowerCase().split(/\s+/).filter(Boolean).every(w=>n.includes(w))};
 function foodsList(){
@@ -463,7 +602,7 @@ function vFoods(){
   return `<div class="top"><div><div class="micro">Library</div><h1>Foods</h1></div></div>
   <div class="stack"><div class="seg"><button data-a="seg" data-s="foods" class="${ui.seg==='foods'?'on':''}">Ingredients · ${S.foods.length}</button><button data-a="seg" data-s="meals" class="${ui.seg==='meals'?'on':''}">Meals · ${S.meals.length}</button></div>
   <input class="inp txt" id="fq" placeholder="Search" value="${esc(ui.q)}" autocomplete="off">
-  <div class="btns">${ui.seg==='foods'?'<button class="btn pri" data-a="newFood">New ingredient</button><button class="btn" data-a="usdaLib">Search USDA</button>':'<button class="btn pri" data-a="newMeal">New meal</button>'}</div>
+  <div class="btns">${ui.seg==='foods'?'<button class="btn pri" data-a="newFood">New ingredient</button><button class="btn" data-a="newRecipe">New recipe</button><button class="btn" data-a="usdaLib">Search USDA</button>':'<button class="btn pri" data-a="newMeal">New meal</button>'}</div>
   ${ui.seg==='foods'&&ng?notice(ui.gen?'Showing '+ng+' with generic or estimated macros, most eaten first. Tap one and enter your label.':ng+' ingredient'+(ng>1?'s':'')+' still use generic or estimated macros.',`<button class="btn sm" data-a="gen">${ui.gen?'Show all':'Show'}</button>`):''}
   <div class="card list" id="flist" style="padding:0;overflow:hidden">${foodsList()}</div></div>`;
 }
@@ -533,7 +672,7 @@ function vWeight(){
     <div class="kv"><span class="k">Formula estimate</span><span class="v">${td.formula?fmt(td.formula):'needs weight'}</span></div>
   </div>
   <p class="note">${td.calibrated?'Correction compares what you ate on complete days, adjusted for your weight trend, against what the watch reported on those days. It assumes partial days look like complete ones.':`Showing the raw Health number until calibration unlocks: ${need?need+' more complete day'+(need>1?'s':'')+' with Health data':'enough complete days'}${td.kgPerDay===null?', plus 5 weigh-ins across 10 days':''}.`}</p>
-  <div class="btns"><button class="btn pri" data-a="pasteHealth">Import from Health</button><button class="btn" data-a="healthManual">Enter manually</button></div>
+  <div class="btns"><button class="btn pri" data-a="paste">Paste from Health</button><button class="btn" data-a="healthManual">Enter manually</button></div>
   </div></div>`;
   return h;
 }
@@ -561,9 +700,11 @@ function vWeek(){
   const sameMonth=parseD(ui.week).getMonth()===parseD(last).getMonth();
   const gname=(GOALS.find(x=>x[0]===T.goal)||[])[1]||'Custom';
   const gen=genericFoods();
+  let sn=0;const no=()=>z2(++sn);
   let h=`<div class="top"><div><div class="micro">${cur?'This week':'Past week'}</div><h1>${shortDate(ui.week)} – ${sameMonth?parseD(last).getDate():shortDate(last)}</h1></div>
   <div class="datenav"><button data-a="week" data-n="-1" aria-label="Previous week">‹</button><button data-a="week" data-n="1" aria-label="Next week" ${cur?'disabled':''}>›</button></div></div>`;
-  h+=`<div class="sec">${sech('01','Intake',s.comp.length+' of '+s.days.length+' days complete')}<div class="stack">
+  h+=`<button class="btn full" data-a="copyWeek" style="margin:-6px 0 24px">Copy week summary</button>`;
+  h+=`<div class="sec">${sech(no(),'Intake',s.comp.length+' of '+s.days.length+' days complete')}<div class="stack">
   <div><div class="micro">Average on complete days</div><div class="hero">${s.intake!==null?fmt(s.intake):'—'}<small>KCAL</small></div>
   <div class="note" style="margin-top:4px">${s.intake!==null?signedK(s.intake-T.kcal)+' vs target of '+fmt(T.kcal)+'.':'No complete days in this week yet.'}</div></div>
   <div class="card list" style="padding:0;overflow:hidden">${s.all.map(k=>{const v=dayKcal(k),fut=k>today(),over=v>T.kcal*1.05;
@@ -573,7 +714,7 @@ function vWeek(){
     <div class="kv"><span class="k">All logged days, incl. open</span><span class="v">${s.intakeAll!==null?fmt(s.intakeAll)+' · '+s.logged.length+' d':'—'}</span></div>
     <div class="kv"><span class="k">Burn${td.calibrated?', corrected':''}</span><span class="v">${s.burn!==null?fmt(s.burn)+' · '+s.burnDays+' d':'no data'}</span></div>
   </div></div></div>`;
-  h+=`<div class="sec">${sech('02','Pace',s.weighIns+' weigh-in'+(s.weighIns===1?'':'s'))}<div class="stack">
+  h+=`<div class="sec">${sech(no(),'Pace',s.weighIns+' weigh-in'+(s.weighIns===1?'':'s'))}<div class="stack">
   <div class="card">
     <div class="kv"><span class="k">Plan · ${gname}</span><span class="v">${pace(s.planKg)}</span></div>
     <div class="kv"><span class="k">Implied by intake − burn</span><span class="v">${s.expKg!==null?pace(s.expKg)+' · '+s.bothN+' d':'—'}</span></div>
@@ -581,17 +722,28 @@ function vWeek(){
   </div>
   <p class="note">${s.actKg===null?'Scale pace needs 2 or more weigh-ins in this week and in the week before.':'Scale pace swings with water. Judge it across 2 to 3 weeks, not one.'}${s.expKg===null?' Implied pace needs a complete day that also has Health burn.':''}</p>
   </div></div>`;
-  h+=`<div class="sec">${sech('03','Calibration',td.calibrated?'<span class="chip on">Calibrated</span>':'<span class="chip warn">Pending</span>')}
+  if(cur)h+=goalSec(no);
+  h+=`<div class="sec">${sech(no(),'Calibration',td.calibrated?'<span class="chip on">Calibrated</span>':'<span class="chip warn">Pending</span>')}
   <div class="card">
     <div class="kv"><span class="k">Complete days with burn, last ${WINDOW}</span><span class="v">${td.complete} of ${MIN_COMPLETE}</span></div>
     <div class="kv"><span class="k">Weigh-ins, last ${WINDOW}</span><span class="v">${td.weighIns} of 5${td.weighIns>=5&&td.wSpan<10?' · span '+td.wSpan+' of 10 d':''}</span></div>
     <div class="kv"><span class="k">Watch correction</span><span class="v">${td.calibrated?'× '+td.factor.toFixed(2):'pending'}</span></div>
   </div></div>`;
-  if(gen.length)h+=`<div class="sec">${sech('04','Staples to verify',gen.length+' generic')}<div class="stack">
+  if(gen.length)h+=`<div class="sec">${sech(no(),'Staples to verify',gen.length+' generic')}<div class="stack">
   <div class="card list" style="padding:0;overflow:hidden">${gen.slice(0,3).map(f=>foodRow(f,'editFood')).join('')}</div>
   <p class="note" style="margin:0">Most eaten first. Generic macros skew intake, and intake drives the correction.</p>
   ${gen.length>3?'<button class="btn full" data-a="genAll">Show all '+gen.length+'</button>':''}</div></div>`;
   return h;
+}
+function goalSec(no){
+  const g=goalInfo(),u=wUnit(),dp=u==='lb'?1:2,pace=r=>signed(toDisp(r*7),dp)+' '+u+'/wk';
+  let h=`<div class="sec">${sech(no(),'Goal',g.goal?r1(toDisp(g.goal))+' '+u:'not set')}<div class="stack">
+  <div class="inline"><label class="field"><span class="micro">Goal weight (${u})</span><input id="gw" inputmode="decimal" value="${g.goal?r1(toDisp(g.goal)):''}" placeholder="e.g. ${u==='lb'?'175':'79.5'}"></label><button class="btn" data-a="saveGoalW">Save</button></div>`;
+  if(g.goal&&g.cur!==null)h+=`<div class="card">${kv(g.isAvg?'Now, 7-day average':'Now, last weigh-in',r1(toDisp(g.cur))+' '+u)}${kv('To go',signed(toDisp(g.goal-g.cur),1)+' '+u)}${kv('28-day trend',g.rate===null?'needs 5 weigh-ins':pace(g.rate))}${kv('Goal date at trend',etaText(g.trendEta))}${kv('Goal date at plan pace',etaText(g.planEta))}</div>`;
+  else if(g.goal)h+=`<p class="note" style="margin:0">Log a weight to see the projection.</p>`;
+  if(g.pct!==null&&g.pct>1)h+=`<p class="note warn" style="margin:0">Trend is ${g.pct.toFixed(1)}% of bodyweight per week, above the 1% guideline. The first weeks include water. If it holds for 2 to 3 weeks, raise the target.</p>`;
+  else if(g.goal&&g.rate===null)h+=`<p class="note" style="margin:0">The trend needs 5 weigh-ins across 10 days in the last 28.</p>`;
+  return h+`</div></div>`;
 }
 const GOALS=[['lose','Lose',-500],['maintain','Maintain',0],['bulk','Bulk',500],['custom','Custom',null]];
 function setKcal(k){ // keeps protein and fat grams, carbs absorb the change
@@ -609,6 +761,10 @@ function targetNote(){
   const T=S.targets,td=tdee(),tail=td.best?' Estimated TDEE is '+fmt(td.best)+'.':'';
   if(T.mode==='pct'){const sm=r1(T.pp+T.pc+T.pf);return 'Targets: protein '+T.p+' g, carbs '+T.c+' g, fat '+T.f+' g.'+(sm!==100?' Split adds up to '+sm+'%, not 100%.':'')+tail}
   const k=T.p*4+T.c*4+T.f*9;return 'Macros add up to '+fmt(k)+' kcal: '+(k?r0(T.p*400/k)+'% protein, '+r0(T.c*400/k)+'% carbs, '+r0(T.f*900/k)+'% fat.':'')+tail;
+}
+function snapKv(){
+  const sn=ui.snaps,p=ui.persisted;
+  return kv('Protected from iOS clean-up',p===true?'Yes':p===false?'Not granted':'Unknown')+kv('Snapshots on this phone',sn===null?'Unavailable':sn&&sn.length?sn.length+' · latest '+snapWhen(sn[0]):sn?'None yet':'…');
 }
 function vSettings(){
   const T=S.targets,P=S.profile,st=S.settings,macroK=T.p*4+T.c*4+T.f*9,td=tdee(),ba=backupAge();
@@ -633,7 +789,7 @@ function vSettings(){
     <p class="note">Free key: api.data.gov/signup. Without one, search runs on a shared demo key with a low hourly limit. The key stays on this phone.</p>
   </div></div>
   <div class="sec">${sech('04','Apple Health')}
-    <p class="note" style="margin-top:0">A web app cannot read Apple Health directly. Build this Shortcut once on your iPhone, run it, then tap Import from Health. It brings in yesterday’s burn and today’s weigh-in.</p>
+    <p class="note" style="margin-top:0">A web app cannot read Apple Health directly. Build this Shortcut once on your iPhone, run it, then tap Paste on Today. It brings in yesterday’s burn and today’s weigh-in.</p>
     <details><summary>Shortcut steps</summary><ol>
       <li>Shortcuts app, new shortcut, name it <code>Fuel Burn</code>.</li>
       <li>Add <b>Date</b>, set to Current Date. Add <b>Adjust Date</b>: Get Start of Day. Save it as variable <code>Today0</code>.</li>
@@ -649,7 +805,7 @@ function vSettings(){
     <details><summary>Accepted paste formats</summary><ol><li><code>2026-10-11 active=612 resting=1890</code></li><li><code>2026-10-12 weight=185.4</code> (in your weight unit, or add <code>lb</code> / <code>kg</code>)</li><li><code>612 1890</code> (assumed to be yesterday)</li><li>Several lines at once, one day per line. An empty <code>weight=</code> is skipped.</li></ol></details>
   </div>
   <div class="sec">${sech('05','Log by chat')}
-    <p class="note" style="margin-top:0">Describe what you ate to Claude in a Shortcut, then tap Paste log on Today. Saved ingredients and meals use your own macros; anything else comes in as an estimate you can correct later.</p>
+    <p class="note" style="margin-top:0">Describe what you ate to Claude in a Shortcut, then tap Paste on Today. Saved ingredients and meals use your own macros; anything else comes in as an estimate you can correct later.</p>
     <div class="stack"><button class="btn full" data-a="copyPrompt">Copy Shortcut prompt</button></div>
     <details style="margin-top:12px"><summary>Shortcut steps</summary><ol>
       <li>Tap <b>Copy Shortcut prompt</b> above. It includes your ingredient and meal names, so copy it again after adding new ones.</li>
@@ -658,15 +814,17 @@ function vSettings(){
       <li>Add <b>Text</b>: paste the prompt, then insert the <code>Ask for Input</code> variable on the last line.</li>
       <li>Add <b>Ask Claude</b> (from the Claude app) and pass it the <code>Text</code>.</li>
       <li>Add <b>Copy to Clipboard</b> with the Ask Claude result.</li>
-      <li>Run it, open Fuel, tap <b>Paste log</b>, check the preview, tap Add.</li>
+      <li>Run it, open Fuel, tap <b>Paste</b>, check the preview, tap Add.</li>
     </ol></details>
     <details><summary>Accepted line formats</summary><ol><li><code>lunch | Chicken breast, cooked | 180 g</code></li><li><code>dinner | salmon fillet, baked | 170 g | kcal=350 p=37 c=0 f=21</code></li><li><code>breakfast | Oats bowl | 1x</code> (a saved meal)</li><li><code>snacks | Egg, whole | 2 eggs</code> (uses the saved serving size)</li><li>A line with only <code>yesterday</code> or <code>2026-10-11</code> dates the lines after it. Otherwise lines go to the day you are viewing.</li></ol></details>
   </div>
   <div class="sec">${sech('06','Backup')}<div class="stack">
     <div class="card"><div class="kv"><span class="k">Last backup</span><span class="v" ${ba===null||ba>=7?'style="color:var(--warn)"':''}>${ba===null?'Never':shortDate(ymd(new Date(S.meta.lastBackup)))+' · '+(ba?ba+' d ago':'today')}</span></div></div>
     <div class="btns"><button class="btn ${ba===null||ba>=7?'pri':''}" data-a="export">Back up now</button><button class="btn" data-a="import">Import backup</button></div>
+    <div class="card" id="snapinfo">${snapKv()}</div>
+    <button class="btn full" data-a="snaps">Restore a snapshot</button>
     <button class="btn dan full" data-a="reset">Erase all data</button>
-    <p class="note">Everything lives on this phone only, and iOS can clear it. Back up now opens the share sheet: choose Save to Files, then iCloud Drive. Today shows a reminder after 7 days.</p>
+    <p class="note">Everything lives on this phone only. Fuel keeps a snapshot for each of the last 7 days it was used, plus one before every erase, import or restore, but clearing Safari data or deleting the app removes those too. The file backup is the only copy off the phone: Back up now opens the share sheet, choose Save to Files, then iCloud Drive. Today shows a reminder after 7 days.</p>
     <input type="file" id="imp" accept="application/json,.json" style="display:none">
   </div></div>`;
 }
@@ -691,21 +849,21 @@ function drawPicker(){
     <div class="inline"><input class="inp txt" id="pq" placeholder="${p.tab==='usda'?'Search USDA, e.g. salmon':'Search'}" value="${esc(p.q)}" autocomplete="off" enterkeyhint="search">${p.tab==='usda'?'<button class="btn pri" data-a="usdaGo">Search</button>':''}</div>
     <div class="card list" id="plist" style="padding:0;overflow:hidden">${pickerList()}</div>
     ${p.tab==='foods'||p.tab==='recent'?'<button class="btn full" data-a="newFood">New ingredient</button>':''}</div>`,
-    p.mode==='log'?'Add to '+niceDate(ui.date):p.mode==='meal'?'Meal builder':'Add to library');
+    p.mode==='log'?'Add to '+niceDate(ui.date):p.mode==='meal'?(ctx.meal&&ctx.meal.kind==='recipe'?'Recipe builder':'Meal builder'):'Add to library');
 }
 function pickerList(){
-  const p=ctx.pick;
+  const p=ctx.pick,self=f=>p.mode==='meal'&&ctx.meal&&ctx.meal.id===f.id; // a recipe cannot contain itself
   if(p.tab==='usda'){
     if(p.msg)return `<div class="empty">${esc(p.msg)}</div>`;
     return p.usda.length?p.usda.map((f,i)=>`<button class="row" data-a="pickUsda" data-i="${i}"><span class="nm">${esc(f.name)}<small>per 100 g · P ${r1(f.p)} · C ${r1(f.c)} · F ${r1(f.f)}</small></span><span class="k">${fmt(f.kcal)}<small>kcal</small></span></button>`).join(''):'<div class="empty">Type a food and tap Search.</div>';
   }
   if(p.tab==='meals'){const ms=S.meals.filter(m=>match(m.name,p.q));return ms.length?ms.map(m=>mealRow(m,'pickMeal')).join(''):'<div class="empty">No meals yet. Create them in Foods.</div>'}
   if(p.tab==='recent'){
-    const fs=usage(p.slot).filter(f=>match(f.name,p.q)),ms=p.mode==='log'?usualMeals(p.slot).filter(m=>match(m.name,p.q)):[];
+    const fs=usage(p.slot).filter(f=>match(f.name,p.q)&&!self(f)),ms=p.mode==='log'?usualMeals(p.slot).filter(m=>match(m.name,p.q)):[];
     if(!fs.length&&!ms.length)return '<div class="empty">Nothing logged yet.</div>';
     return ms.map(quickMealRow).join('')+fs.map(f=>p.mode==='log'?quickRow(f):foodRow(f,'pickFood')).join('');
   }
-  const fs=S.foods.slice().sort((a,b)=>a.name.localeCompare(b.name)).filter(f=>match(f.name,p.q));
+  const fs=S.foods.slice().sort((a,b)=>a.name.localeCompare(b.name)).filter(f=>match(f.name,p.q)&&!self(f));
   return fs.length?fs.map(f=>foodRow(f,'pickFood')).join(''):'<div class="empty">No foods match.</div>';
 }
 function quickRow(f){ // tap the name for the amount sheet, tap the button to log the last amount straight away
@@ -756,15 +914,15 @@ function saveUsda(u){
   return f;
 }
 /* amount */
-function openAmount(f){
-  const last=lastGrams(f.id);
+function openAmount(f,g){
+  const last=g||lastGrams(f.id);
   const a=ctx.amt={food:f,unit:(!last&&f.serving)?'srv':'g',val:(!last&&f.serving)?1:(last||100)};
   const p=ctx.pick;
   sheet(f.name,`<div class="stack"><p class="note" style="margin:0">Per 100 g: ${fmt(f.kcal)} kcal · P ${r1(f.p)} · C ${r1(f.c)} · F ${r1(f.f)}</p>
   <div class="seg" id="aunits">${unitBtns()}</div>
   <label class="field"><span class="micro">Amount</span><input id="amt" inputmode="decimal" value="${a.val}"></label>
   <div class="card" id="aout">${amtOut()}</div>
-  <button class="btn pri full" data-a="amtOk">${p.mode==='meal'?'Add to meal':'Add to '+esc(p.slot)}</button>
+  <button class="btn pri full" data-a="amtOk">${p.mode==='meal'?(ctx.meal&&ctx.meal.kind==='recipe'?'Add to recipe':'Add to meal'):'Add to '+esc(p.slot)}</button>
   <button class="btn full" data-a="backPick">Back</button></div>`,p.mode==='meal'?'Ingredient':'Amount');
   setTimeout(()=>{const i=$('#amt');if(i){i.focus();i.select()}},50);
 }
@@ -772,8 +930,8 @@ function unitBtns(){const a=ctx.amt;return [['g','Grams'],['oz','Ounces']].conca
 function amtGrams(){const a=ctx.amt,v=num(a.val);return a.unit==='g'?v:a.unit==='oz'?v*OZ:v*a.food.serving.g}
 function amtOut(){const g=amtGrams(),e=mkEntry(ctx.amt.food,g);return `<div class="kv"><span class="k">${r0(g)} g</span><span class="v">${fmt(e.kcal)} kcal</span></div><div class="kv"><span class="k">Protein · Carbs · Fat</span><span class="v">${r1(e.p)} · ${r1(e.c)} · ${r1(e.f)} g</span></div>`}
 /* meal logging */
-function openMealLog(m){
-  ctx.ml={meal:m,items:mealItems(m).map(i=>({foodId:i.foodId,g:i.g,base:i.g}))};drawMealLog();
+function openMealLog(m,sc){
+  ctx.ml={meal:m,items:mealItems(m).map(i=>({foodId:i.foodId,g:r1(i.g*(sc||1)),base:i.g}))};drawMealLog();
 }
 function drawMealLog(){
   const l=ctx.ml;
@@ -804,14 +962,43 @@ function openFood(f,ret){
 /* meal editor */
 function openMeal(m){ctx.meal=m?{id:m.id,name:m.name,items:mealItems(m).map(i=>({...i}))}:{name:'',items:[]};drawMeal()}
 function drawMeal(){
-  const m=ctx.meal,t=sum(m.items.map(i=>mkEntry(food(i.foodId),i.g)));
+  const m=ctx.meal;if(m.kind==='recipe')return drawRecipe();
   sheet(m.id?'Edit meal':'New meal',`<div class="stack"><label class="field"><span class="micro">Name</span><input class="txt" id="mn" value="${esc(m.name)}" autocapitalize="sentences"></label>
   <div>${m.items.length?m.items.map((i,ix)=>`<div class="mealitem"><span class="nm">${esc(food(i.foodId).name)}</span><input inputmode="decimal" data-mi="${ix}" value="${r1(i.g)}"><span class="u">g</span><button class="x" data-a="mealRm" data-i="${ix}" aria-label="Remove">✕</button></div>`).join(''):'<div class="empty">No ingredients yet.</div>'}</div>
   <button class="btn full" data-a="mealAdd">Add ingredient</button>
-  <div class="card" id="mout"><div class="kv"><span class="k">Total</span><span class="v">${fmt(t.kcal)} kcal</span></div><div class="kv"><span class="k">Protein · Carbs · Fat</span><span class="v">${r0(t.p)} · ${r0(t.c)} · ${r0(t.f)} g</span></div></div>
+  <div class="card" id="mout">${mealOut()}</div>
   <div class="btns">${m.id?'<button class="btn dan" data-a="mealDel">Delete</button>':''}<button class="btn pri" data-a="mealOk">Save meal</button></div></div>`,'Library');
 }
-function syncMeal(){const m=ctx.meal;if(!m)return;const n=$('#mn');if(n)m.name=n.value;document.querySelectorAll('[data-mi]').forEach(i=>{m.items[+i.dataset.mi].g=num(i.value)})}
+function syncMeal(){
+  const m=ctx.meal;if(!m)return;const n=$('#mn');if(n)m.name=n.value;
+  document.querySelectorAll('[data-mi]').forEach(i=>{m.items[+i.dataset.mi].g=num(i.value)});
+  const y=$('#ry'),pp=$('#rp');if(y)m.yield=num(y.value)||'';if(pp)m.portions=num(pp.value)||'';
+}
+function mealOut(){
+  const m=ctx.meal;
+  if(m.kind==='recipe'){
+    const r=recipeCalc(m),pg=m.portions>0?r.y/m.portions:0;
+    return kv('Batch total',fmt(r.t.kcal)+' kcal · raw '+fmt(r.raw)+' g')+kv('Per 100 g cooked',fmt(r.per.kcal)+' kcal')+kv('Protein · Carbs · Fat',r1(r.per.p)+' · '+r1(r.per.c)+' · '+r1(r.per.f)+' g')+(pg?kv('Per portion · '+r0(pg)+' g',fmt(r.per.kcal*pg/100)+' kcal · P '+r0(r.per.p*pg/100)):'');
+  }
+  const t=sum(m.items.map(i=>mkEntry(food(i.foodId),i.g)));
+  return kv('Total',fmt(t.kcal)+' kcal')+kv('Protein · Carbs · Fat',r0(t.p)+' · '+r0(t.c)+' · '+r0(t.f)+' g');
+}
+/* recipe editor: shares the meal draft (ctx.meal) so the ingredient picker works for both */
+function openRecipe(f){
+  ctx.meal=f?{kind:'recipe',id:f.id,name:f.name,items:f.recipe.items.filter(i=>food(i.foodId)).map(i=>({...i})),yield:f.recipe.yield||'',portions:f.recipe.portions||''}:{kind:'recipe',name:'',items:[],yield:'',portions:''};
+  drawRecipe();
+}
+function drawRecipe(){
+  const m=ctx.meal;
+  sheet(m.id?'Edit recipe':'New recipe',`<div class="stack"><label class="field"><span class="micro">Name</span><input class="txt" id="mn" value="${esc(m.name)}" placeholder="e.g. Turkey chili" autocapitalize="sentences"></label>
+  <div class="micro">Raw ingredients</div>
+  <div>${m.items.length?m.items.map((i,ix)=>`<div class="mealitem"><span class="nm">${esc(food(i.foodId).name)}</span><input inputmode="decimal" data-mi="${ix}" value="${r1(i.g)}"><span class="u">g</span><button class="x" data-a="mealRm" data-i="${ix}" aria-label="Remove">✕</button></div>`).join(''):'<div class="empty">No ingredients yet.</div>'}</div>
+  <button class="btn full" data-a="mealAdd">Add ingredient</button>
+  <div class="grid2"><label class="field"><span class="micro">Cooked weight (g)</span><input id="ry" inputmode="decimal" value="${m.yield||''}" placeholder="same as raw"></label><label class="field"><span class="micro">Portions (optional)</span><input id="rp" inputmode="decimal" value="${m.portions||''}"></label></div>
+  <div class="card" id="mout">${mealOut()}</div>
+  <p class="note" style="margin:0">Weigh the finished batch without the pot. It is saved as an ingredient, so you log it by cooked grams${m.id?'. For a new batch, change the cooked weight; past entries keep the macros they were logged with':''}.</p>
+  <div class="btns">${m.id?'<button class="btn dan" data-a="recipeDel">Delete</button>':''}<button class="btn pri" data-a="recipeOk">Save recipe</button></div></div>`,'Library · recipe');
+}
 function openHealthManual(){
   const k=addDays(today(),-1),h=S.health[k]||{};
   sheet('Energy burned',`<div class="stack"><label class="field"><span class="micro">Date</span><input type="date" id="hd" value="${k}" max="${today()}"></label>
@@ -822,18 +1009,28 @@ function openHealthManual(){
 /* paste log */
 function openPaste(text){
   ctx.paste={text:text||''};
-  sheet('Paste log',`<div class="stack"><label class="field"><span class="micro">Lines from Claude</span><textarea id="pl" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="lunch | chicken breast | 180 g&#10;dinner | salmon, baked | 170 g | kcal=350 p=37 c=0 f=21">${esc(ctx.paste.text)}</textarea></label>
+  sheet('Paste',`<div class="stack"><label class="field"><span class="micro">Log lines from Claude, or Health lines</span><textarea id="pl" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="lunch | chicken breast | 180 g&#10;dinner | salmon, baked | 170 g | kcal=350 p=37 c=0 f=21&#10;2026-10-11 active=612 resting=1890">${esc(ctx.paste.text)}</textarea></label>
   <div id="plout">${pasteOut()}</div>
-  <button class="btn full" data-a="copyPrompt">Copy Shortcut prompt</button>
-  <p class="note" style="margin:0">Saved ingredients and meals use your macros. Anything else is added as a new ingredient with Claude’s estimate.</p></div>`,'Add to '+niceDate(ui.date));
+  <div class="btns"><button class="btn" data-a="copyPrompt">Copy Shortcut prompt</button><button class="btn" data-a="healthManual">Enter burn</button></div>
+  <p class="note" style="margin:0">Saved ingredients and meals use your macros. Anything else is added as a new ingredient with Claude’s estimate. Health lines update burn and weight.</p></div>`,'Add to '+niceDate(ui.date));
 }
 function pasteOut(){
-  const items=parseLog(ctx.paste.text,ui.date),ok=items.filter(i=>i.kind!=='err');
-  if(!items.length)return ctx.paste.text.trim()?'<div class="empty">No log lines found. Each line needs: slot | name | amount</div>':'';
-  const tag={meal:'saved meal',food:'saved ingredient',new:'new · estimate'};
-  const t=sum(ok);
-  return `<div class="card list" style="padding:0;overflow:hidden;margin-bottom:12px">${items.map(i=>`<div class="row"><span class="nm">${esc(i.name)}<small class="${i.kind==='err'?'bad':''}">${i.kind==='err'?esc(i.msg):esc(i.slot)+(i.k!==ui.date?' · '+shortDate(i.k):'')+' · '+(i.kind==='meal'?i.scale+'×':r0(i.g)+' g')+' · '+tag[i.kind]}</small></span><span class="k">${i.kind==='err'?'<small>skipped</small>':fmt(i.kcal)+`<small>P ${r0(i.p)} · C ${r0(i.c)} · F ${r0(i.f)}</small>`}</span></div>`).join('')}</div>
-  <button class="btn pri full" data-a="plOk" ${ok.length?'':'disabled'}>${ok.length?'Add '+ok.length+' item'+(ok.length>1?'s':'')+' · '+fmt(t.kcal)+' kcal':'Nothing to add'}</button>`;
+  const txt=ctx.paste.text,items=parseLog(txt,ui.date),ok=items.filter(i=>i.kind!=='err'),hs=readHealth(txt);
+  if(!items.length&&!hs.length)return txt.trim()?'<div class="empty">Nothing recognised. Log lines: slot | name | amount. Health lines: 2026-10-11 active=612 resting=1890</div>':'';
+  const tag={meal:'saved meal',food:'saved ingredient',new:'new · estimate'},t=sum(ok),u=wUnit();
+  const hrow=o=>`<div class="row"><span class="nm">Apple Health<small>${shortDate(o.k)}${o.active!=null?' · active '+fmt(o.active)+' · resting '+fmt(o.resting):''}${o.kg!=null&&o.active!=null?' · weight '+r1(toDisp(o.kg))+' '+u:''}</small></span><span class="k">${o.active!=null?fmt(o.active+o.resting)+'<small>kcal burn</small>':r1(toDisp(o.kg))+'<small>'+u+' weigh-in</small>'}</span></div>`;
+  const label=ok.length?'Add '+ok.length+' item'+(ok.length>1?'s':'')+' · '+fmt(t.kcal)+' kcal'+(hs.length?' + Health':''):hs.length?'Import Health data':'Nothing to add';
+  return `<div class="card list" style="padding:0;overflow:hidden;margin-bottom:12px">${items.map(i=>`<div class="row"><span class="nm">${esc(i.name)}<small class="${i.kind==='err'?'bad':''}">${i.kind==='err'?esc(i.msg):esc(i.slot)+(i.k!==ui.date?' · '+shortDate(i.k):'')+' · '+(i.kind==='meal'?i.scale+'×':r0(i.g)+' g')+' · '+tag[i.kind]}</small></span><span class="k">${i.kind==='err'?'<small>skipped</small>':fmt(i.kcal)+`<small>P ${r0(i.p)} · C ${r0(i.c)} · F ${r0(i.f)}</small>`}</span></div>`).join('')}${hs.map(hrow).join('')}</div>
+  <button class="btn pri full" data-a="plOk" ${ok.length||hs.length?'':'disabled'}>${label}</button>`;
+}
+async function openSnaps(){
+  let sn=[];try{sn=await snapList();ui.snaps=sn}catch(e){}
+  sheet('Snapshots',`<div class="stack"><div class="card list" style="padding:0;overflow:hidden">${sn.length?sn.map(x=>`<button class="row" data-a="snapRestore" data-k="${esc(x.k)}"><span class="nm">${snapWhen(x)}<small>${x.why?esc(x.why):'automatic'} · ${x.days} day${x.days===1?'':'s'} logged</small></span><span class="k">Restore</span></button>`).join(''):'<div class="empty">No snapshots yet. One is saved each day you use Fuel.</div>'}</div>
+  <p class="note" style="margin:0">Restoring replaces what is on this phone now. The current data is snapshotted first, so a restore can be undone from this list.</p></div>`,'Backup');
+}
+async function copyText(text,msg,title){
+  try{await navigator.clipboard.writeText(text);toast(msg)}
+  catch(e){sheet(title,`<div class="stack"><label class="field"><span class="micro">Select all, then copy</span><textarea id="cp" readonly style="height:300px">${esc(text)}</textarea></label></div>`,'Copy');const a=$('#cp');a.focus();a.select()}
 }
 function flash(el){const o=el.textContent;el.textContent='✓';el.disabled=true;setTimeout(()=>{if(el.isConnected){el.textContent=o;el.disabled=false}},900)}
 let armed=null;
@@ -897,7 +1094,7 @@ const A={
   },
   seg(d){ui.seg=d.s;ui.q='';render()},
   newFood(){openFood(null,document.body.classList.contains('sheet')&&ctx.pick?'pick':null)},
-  editFood(d){ctx.pick=null;openFood(food(d.id),null)},
+  editFood(d){ctx.pick=null;const f=food(d.id);if(f.recipe)openRecipe(f);else openFood(f,null)},
   foodOk(){
     const name=$('#fn').value.trim();if(!name)return toast('Name it first');
     const per=num($('#fper').value);if(per<=0)return toast('Enter the grams the values are for');
@@ -907,12 +1104,43 @@ const A={
     const sl=$('#fsl').value.trim(),sg=num($('#fsg').value);v.serving=sl&&sg>0?{label:sl,g:sg}:null;
     let f=ctx.food.id&&food(ctx.food.id);
     let fixed=0;
-    if(f){const ch=['name','kcal','p','c','f'].some(x=>f[x]!==v[x]),past=$('#fpast').value==='1';Object.assign(f,v);if(isEst(f))f.src='label';if(ch&&past)fixed=relog(f)}
+    if(f){const ch=['name','kcal','p','c','f'].some(x=>f[x]!==v[x]),past=$('#fpast').value==='1';Object.assign(f,v);if(isEst(f))f.src='label';if(ch&&past)fixed=relog(f);if(ch)recalcRecipes()}
     else{f=Object.assign({id:uid(),src:'manual'},v);S.foods.push(f)}
     save();if(ctx.food.ret==='pick')openAmount(f);else{closeSheet();render();if(fixed)toast('Updated '+fixed+' past entr'+(fixed>1?'ies':'y'))}
   },
   foodDel(d,el){if(!twoTap(el,'fd','Tap again to delete'))return;S.foods=S.foods.filter(f=>f.id!==ctx.food.id);save();closeSheet();render()},
   newMeal(){openMeal(null)},
+  newRecipe(){ctx.pick=null;openRecipe(null)},
+  recipeOk(){
+    syncMeal();const m=ctx.meal;m.name=m.name.trim();if(!m.name)return toast('Name the recipe');
+    m.items=m.items.filter(i=>i.g>0);if(!m.items.length)return toast('Add an ingredient');
+    const r=recipeCalc(m);if(r.per.kcal>900||r.per.p+r.per.c+r.per.f>102)return toast('Cooked weight looks too low');
+    const v={name:m.name,kcal:r1(r.per.kcal),p:r1(r.per.p),c:r1(r.per.c),f:r1(r.per.f),serving:m.portions>0?{label:'portion',g:r1(r.y/m.portions)}:null,src:'recipe',
+      recipe:{items:m.items.map(i=>({foodId:i.foodId,g:i.g})),yield:m.yield>0?m.yield:0,portions:m.portions>0?m.portions:0}};
+    const f=m.id&&food(m.id);if(f)Object.assign(f,v);else S.foods.push(Object.assign({id:uid()},v));
+    save();ctx.meal=null;closeSheet();ui.seg='foods';render();toast('Recipe saved · '+fmt(v.kcal)+' kcal per 100 g');
+  },
+  recipeDel(d,el){if(!twoTap(el,'rd','Tap again to delete'))return;S.foods=S.foods.filter(f=>f.id!==ctx.meal.id);save();ctx.meal=null;closeSheet();render()},
+  fitAdd(d){
+    const slot=slotNow();
+    if(d.m){const m=S.meals.find(x=>x.id===d.m),es=mealItems(m).filter(i=>i.g>0).map(i=>mkEntry(food(i.foodId),r1(i.g*+d.s),slot,m.name));day(ui.date).entries.push(...es);save();render();return toast(m.name+' added to '+slot)}
+    const f=food(d.f);day(ui.date).entries.push(mkEntry(f,+d.g,slot));save();render();toast(f.name+' added to '+slot);
+  },
+  fitOpen(d){
+    ctx.pick={mode:'log',slot:slotNow(),tab:'recent',q:'',usda:[],msg:''};
+    if(d.m)openMealLog(S.meals.find(x=>x.id===d.m),+d.s);else openAmount(food(d.f),+d.g);
+  },
+  copyWeek(){copyText(weekText(ui.week),'Week summary copied','Week summary')},
+  saveGoalW(){
+    const v=num($('#gw').value);
+    if(!v){S.targets.goalKg=0;save();render();return toast('Goal weight cleared')}
+    const kg=fromDisp(v);if(kg<25||kg>320)return toast('That weight looks off');
+    S.targets.goalKg=Math.round(kg*1000)/1000;save();render();toast('Goal weight saved');
+  },
+  snaps(){openSnaps()},
+  snapRestore(d,el){if(!twoTap(el.querySelector('.k'),'sn'+d.k,'Tap again'))return;const rec=(ui.snaps||[]).find(x=>x.k===d.k);if(rec)restoreSnap(rec)},
+  recover(){if(ui.recover)restoreSnap(ui.recover)},
+  recoverNo(){ui.recover=null;render()},
   editMeal(d){openMeal(S.meals.find(m=>m.id===d.id))},
   mealAdd(){syncMeal();openPicker('meal',null,'foods')},
   mealRm(d){syncMeal();ctx.meal.items.splice(+d.i,1);drawMeal()},
@@ -923,19 +1151,17 @@ const A={
     save();ctx.meal=null;closeSheet();ui.seg='meals';render();
   },
   mealDel(d,el){if(!twoTap(el,'md','Tap again to delete'))return;S.meals=S.meals.filter(x=>x.id!==ctx.meal.id);save();ctx.meal=null;closeSheet();render()},
-  async pasteHealth(){
+  async paste(){ // one button: Health lines import straight away, log lines open the preview
     let t='';try{t=await navigator.clipboard.readText()}catch(e){}
-    const r=t?parseHealth(t):{n:0,w:0};
-    if(r.n||r.w){render();toast(healthMsg(r))}else{openHealthManual();if(t)toast('Clipboard did not look like Health data')}
-  },
-  async pasteLog(){
-    let t='';try{t=await navigator.clipboard.readText()}catch(e){}
-    openPaste(t&&parseLog(t,ui.date).length?t:'');
+    const hs=t?readHealth(t):[],ls=t?parseLog(t,ui.date):[];
+    if(hs.length&&!ls.length){const r=applyHealth(hs);render();return toast(healthMsg(r))}
+    openPaste(ls.length?t:'');
+    if(!ls.length)toast(t?'Clipboard has no log or Health lines':'Clipboard empty. Paste or type below');
   },
   plOk(){
-    const items=parseLog(ctx.paste.text,ui.date).filter(i=>i.kind!=='err');if(!items.length)return toast('Nothing to add');
-    const r=commitLog(items),ks=[...new Set(items.map(i=>i.k))];if(ks.length===1)ui.date=ks[0];
-    closeSheet();render();toast('Added '+r.n+' item'+(r.n>1?'s':'')+(r.nf?' · '+r.nf+' new ingredient'+(r.nf>1?'s':''):''));
+    const txt=ctx.paste.text,items=parseLog(txt,ui.date).filter(i=>i.kind!=='err'),hs=readHealth(txt);if(!items.length&&!hs.length)return toast('Nothing to add');
+    const hr=applyHealth(hs),r=commitLog(items),ks=[...new Set(items.map(i=>i.k))];if(ks.length===1)ui.date=ks[0];
+    closeSheet();render();toast([r.n?'Added '+r.n+' item'+(r.n>1?'s':'')+(r.nf?' · '+r.nf+' new ingredient'+(r.nf>1?'s':''):''):'',hr.n||hr.w?healthMsg(hr):''].filter(Boolean).join(' · '));
   },
   async copyPrompt(){
     const p=logPrompt();
@@ -957,7 +1183,7 @@ const A={
     const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();done();
   },
   import(){$('#imp').click()},
-  reset(d,el){if(!twoTap(el,'reset','Tap again to erase everything'))return;localStorage.removeItem(LS);load();render();toast('Erased')}
+  async reset(d,el){if(!twoTap(el,'reset','Tap again to erase everything'))return;try{await snapshot('before erase')}catch(e){}localStorage.removeItem(LS);load();render();toast('Erased')}
 };
 document.addEventListener('click',ev=>{const el=ev.target.closest('[data-a]');if(!el||el.disabled)return;const fn=A[el.dataset.a];if(fn)fn(el.dataset,el)});
 document.addEventListener('input',ev=>{
@@ -967,22 +1193,25 @@ document.addEventListener('input',ev=>{
   else if(t.id==='pl'){ctx.paste.text=t.value;$('#plout').innerHTML=pasteOut()}
   else if(t.id==='amt'){ctx.amt.val=t.value;$('#aout').innerHTML=amtOut()}
   else if(t.dataset.ml!=null){ctx.ml.items[+t.dataset.ml].g=num(t.value);$('#mlout').innerHTML=mlOut()}
+  else if(t.dataset.mi!=null||t.id==='ry'||t.id==='rp'){syncMeal();$('#mout').innerHTML=mealOut()} // totals update in place: a redraw here would swallow the tap on Save
 });
 document.addEventListener('keydown',ev=>{if(ev.key==='Enter'&&ev.target.id==='pq'&&ctx.pick&&ctx.pick.tab==='usda'){ev.preventDefault();usdaSearch()}});
 document.addEventListener('change',ev=>{
   const t=ev.target;
-  if(t.id==='imp'&&t.files[0]){const rd=new FileReader();rd.onload=()=>{try{const j=JSON.parse(rd.result);if(!Array.isArray(j.foods)||typeof j.log!=='object')throw 0;S=j;save();load();render();toast('Backup restored')}catch(e){toast('Not a Fuel backup file')}};rd.readAsText(t.files[0]);t.value='';return}
-  if(t.dataset.mi!=null){syncMeal();drawMeal();return}
+  if(t.id==='imp'&&t.files[0]){const rd=new FileReader();rd.onload=async()=>{let j;try{j=JSON.parse(rd.result);if(!Array.isArray(j.foods)||typeof j.log!=='object')throw 0}catch(e){return toast('Not a Fuel backup file')}try{await snapshot('before import')}catch(e){}S=j;save();load();render();toast('Backup restored')};rd.readAsText(t.files[0]);t.value='';return}
+  if(t.dataset.mi!=null)return;
   if(!t.dataset.set)return;
   const[a,b]=t.dataset.set.split('.');
   S[a][b]=t.dataset.bool?t.value==='1':t.dataset.str?t.value.trim():num(t.value);save();
   if(a==='targets'&&b==='kcal'&&S.targets.goal!=='custom'){S.targets.goal='custom';save();render();return}
   if(a==='targets'){if(S.targets.mode==='pct'){applyPct();save()}const n=$('#macronote');if(n)n.textContent=targetNote()}
 });
+document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(snapT);snapshot().catch(()=>{})}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&ui.tab==='today'&&!document.body.classList.contains('sheet')&&ui.date!==today()&&ui._seen!==today()){ui._seen=today();ui.date=today();render()}});
 
 load();render();
-if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});
+(navigator.storage&&navigator.storage.persist?navigator.storage.persist().catch(()=>{}):Promise.resolve()).then(snapInfo);
+if(fresh)snapList().then(sn=>{if(sn.length&&!hasData()){ui.recover=sn[0];if(ui.tab==='today'&&!document.body.classList.contains('sheet'))render()}}).catch(()=>{});
 if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
 </body>
