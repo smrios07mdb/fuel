@@ -83,6 +83,9 @@ h1{font-family:var(--serif);font-weight:400;font-size:40px;line-height:1;margin:
 .field input,.field select,.inp{width:100%;height:46px;background:var(--s2);border:1px solid var(--line);border-radius:11px;padding:0 12px;font-size:16px;font-family:var(--mono);outline:none;-webkit-appearance:none;appearance:none}
 .field input:focus,.inp:focus,.field select:focus{border-color:var(--acc)}
 .inp.txt,.field input.txt{font-family:var(--sans)}
+.field textarea{width:100%;height:132px;background:var(--s2);border:1px solid var(--line);border-radius:11px;padding:10px 12px;font-size:13px;line-height:1.45;font-family:var(--mono);color:var(--text);outline:none;resize:none;-webkit-appearance:none;appearance:none}
+.field textarea:focus{border-color:var(--acc)}
+.row .nm small.bad{color:var(--warn)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
 .stack{display:flex;flex-direction:column;gap:12px}
@@ -279,7 +282,7 @@ function lastSlot(slot,before){ // most recent earlier day with something logged
   return null;
 }
 function kcalByFood(days){const from=addDays(today(),-days+1),m={};for(const k of Object.keys(S.log))if(k>=from)for(const e of entries(k))m[e.foodId]=(m[e.foodId]||0)+e.kcal;return m}
-function genericFoods(){const m=kcalByFood(30);return S.foods.filter(f=>f.src==='seed').sort((a,b)=>(m[b.id]||0)-(m[a.id]||0)||a.name.localeCompare(b.name))}
+function genericFoods(){const m=kcalByFood(30);return S.foods.filter(isEst).sort((a,b)=>(m[b.id]||0)-(m[a.id]||0)||a.name.localeCompare(b.name))}
 function relog(f){ // push corrected macros into past entries (usual days recompute when logged)
   let n=0;const fix=e=>{if(e.foodId!==f.id)return;e.name=f.name;e.kcal=f.kcal*e.g/100;e.p=f.p*e.g/100;e.c=f.c*e.g/100;e.f=f.f*e.g/100;n++};
   for(const k of Object.keys(S.log))entries(k).forEach(fix);
@@ -315,6 +318,79 @@ function parseHealth(text){ // lines: yyyy-MM-dd active=N resting=N weight=N (an
   if(n||w)save();return {n,w};
 }
 const healthMsg=r=>'Imported '+[r.n?r.n+' day'+(r.n>1?'s':'')+' of burn':'',r.w?r.w+' weigh-in'+(r.w>1?'s':''):''].filter(Boolean).join(' and ');
+
+/* paste log: one food per line, slot | name | amount | kcal=N p=N c=N f=N (macros are for the amount eaten) */
+const SLOT_ALIAS={b:'Breakfast',breakfast:'Breakfast',l:'Lunch',lunch:'Lunch',d:'Dinner',dinner:'Dinner',s:'Snacks',snack:'Snacks',snacks:'Snacks'};
+const slotNow=()=>{const h=new Date().getHours();return h<11?'Breakfast':h<15?'Lunch':h<17?'Snacks':h<22?'Dinner':'Snacks'};
+const isEst=f=>f.src==='seed'||f.src==='est';
+const toks=s=>String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9%]+/g,' ').trim().split(' ').filter(Boolean).map(w=>w.length>3&&w.endsWith('s')?w.slice(0,-1):w);
+function findByName(list,name,fuzzy){ // exact first; then a single item whose words contain (or are contained in) the pasted words
+  const t=toks(name);if(!t.length)return null;const key=t.join(' ');
+  const ex=list.find(x=>toks(x.name).join(' ')===key);if(ex||!fuzzy)return ex||null;
+  const a=list.filter(x=>{const n=toks(x.name);return t.every(w=>n.includes(w))});if(a.length===1)return a[0];if(a.length)return null;
+  const b=list.filter(x=>{const n=toks(x.name);return n.every(w=>t.includes(w))});return b.length===1?b[0]:null;
+}
+function parseLog(text,base){
+  const out=[],N='(\\d+(?:[.,]\\d+)?)';let k=base;
+  const mac=(s,keys)=>{const m=s.match(new RegExp('(?:^|[\\s,;])(?:'+keys+')\\s*[=:]\\s*'+N,'i'));return m?num(m[1]):null};
+  for(let line of String(text).split(/\r?\n/)){
+    line=line.replace(/[`*]/g,'').replace(/^\s*(?:[-•–]|\d+[.)])\s+/,'').trim();if(!line)continue;
+    const dm=line.match(/^(?:date\s*[=:]?\s*)?(\d{4}-\d{2}-\d{2}|today|yesterday)\s*:?$/i);
+    if(dm){const v=dm[1].toLowerCase(),d=v==='today'?today():v==='yesterday'?addDays(today(),-1):v;if(d<=today())k=d;continue}
+    if(!line.includes('|'))continue;
+    const parts=line.split('|').map(x=>x.trim());while(parts.length&&!parts[0])parts.shift();while(parts.length&&!parts[parts.length-1])parts.pop();
+    if(!parts.length||/^[-: ]+$/.test(parts.join(''))||/^(slot|meal)$/i.test(parts[0]))continue;
+    let slot=SLOT_ALIAS[parts[0].toLowerCase()]||null;if(slot)parts.shift();
+    const name=(parts.shift()||'').replace(/\s+/g,' ');if(!name)continue;
+    const it={k,slot:slot||slotNow(),name,kind:'err',msg:''};out.push(it);
+    const amt=parts.length&&!/[=:]/.test(parts[0])?parts.shift():'',tail=' '+parts.join(' ');
+    const am=amt.match(new RegExp('^'+N+'\\s*(.*)$'));let g=0,cnt=0;
+    if(am){const v=num(am[1]),u=am[2].toLowerCase();
+      if(!u||/^(g|gr|grams?|ml)$/.test(u))g=v;else if(/^(oz|ounces?)$/.test(u))g=v*OZ;else if(/^(kg|kilograms?)$/.test(u))g=v*1000;else if(/^(lbs?|pounds?)$/.test(u))g=v*1000*KG_PER_LB;else cnt=v}
+    const meal=findByName(S.meals.filter(m=>mealItems(m).length),name,false);
+    if(meal&&!g){it.kind='meal';it.ref=meal;it.scale=cnt||1;const t=mealSum(meal);it.g=0;for(const x of ['kcal','p','c','f'])it[x]=t[x]*it.scale;continue}
+    const f=findByName(S.foods,name,true);
+    if(f){
+      if(!g&&cnt){if(f.serving)g=cnt*f.serving.g;else{it.msg='Needs grams: no serving size saved';continue}}
+      if(!g)g=lastGrams(f.id)||(f.serving?f.serving.g:0);
+      if(g<=0||g>5000){it.msg='Amount missing';continue}
+      Object.assign(it,mkEntry(f,g),{kind:'food',ref:f,name:f.name,slot:it.slot});continue;
+    }
+    let kc=mac(tail,'kcal|cal|cals|calories');const pr=mac(tail,'p|pro|protein'),cb=mac(tail,'c|carb|carbs'),ft=mac(tail,'f|fat|fats');
+    if(kc===null&&pr===null&&cb===null&&ft===null){it.msg='Not in your ingredients and no macros given';continue}
+    if(g<=0||g>5000){it.msg='New food needs an amount in grams';continue}
+    const P=pr||0,C=cb||0,F=ft||0;if(kc===null)kc=4*P+4*C+9*F;
+    if(kc*100/g>900||(P+C+F)>g*1.02){it.msg='Macros do not fit '+r0(g)+' g';continue}
+    Object.assign(it,{kind:'new',g,kcal:kc,p:P,c:C,f:F,name:name.charAt(0).toUpperCase()+name.slice(1)});
+  }
+  return out;
+}
+function commitLog(items){ // returns {n: entries added, nf: new ingredients}
+  let n=0,nf=0;
+  for(const it of items){
+    if(it.kind==='meal'){const es=mealItems(it.ref).filter(i=>i.g>0).map(i=>mkEntry(food(i.foodId),r1(i.g*it.scale),it.slot,it.ref.name));day(it.k).entries.push(...es);n+=es.length}
+    else if(it.kind==='food'){day(it.k).entries.push(mkEntry(it.ref,r1(it.g),it.slot));n++}
+    else if(it.kind==='new'){
+      let f=findByName(S.foods,it.name,false);
+      if(!f){const s=100/it.g;f={id:uid(),name:it.name,kcal:r1(it.kcal*s),p:r1(it.p*s),c:r1(it.c*s),f:r1(it.f*s),serving:null,src:'est'};S.foods.push(f);nf++}
+      day(it.k).entries.push(mkEntry(f,r1(it.g),it.slot));n++;
+    }
+  }
+  if(n)save();return {n,nf};
+}
+function logPrompt(){
+  const foods=S.foods.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(f=>'- '+f.name+(f.serving?' (1 '+f.serving.label+' = '+r0(f.serving.g)+' g)':'')).join('\n');
+  const meals=S.meals.filter(m=>mealItems(m).length).map(m=>'- '+m.name).join('\n');
+  return ['Convert what I ate into Fuel log lines. Reply with the lines only: no intro, no notes, no code block, no table header.','',
+  'One line per food:','slot | name | amount | kcal=N p=N c=N f=N','','Rules:',
+  '- slot is Breakfast, Lunch, Dinner or Snacks. If I do not say, pick the likeliest one.',
+  '- amount is always grams, for example 180 g. Convert ounces, cups and pieces to grams, and estimate when I am vague.',
+  '- If the food is in "My ingredients", copy that name exactly and stop after the amount.',
+  '- If I name one of "My meals", write: slot | meal name | 1x (or 0.5x, 2x).',
+  '- For anything else use a short plain name (say cooked or raw when it matters) and give kcal, protein, carbs and fat in grams for the amount eaten, not per 100 g.',
+  '- If I say it was yesterday, put a first line with only the word: yesterday','',
+  'My ingredients:',foods||'- (none)','','My meals:',meals||'- (none)','','What I ate:',''].join('\n');
+}
 
 /* ---------- views ---------- */
 function render(){
@@ -356,6 +432,7 @@ function vToday(){
     <div class="stat"><div class="micro">Net</div><div class="v">${burn?(t.kcal-burn>0?'+':'')+fmt(t.kcal-burn):'<small>n/a</small>'}</div></div>
   </div></div>`;
   h+=`<div class="sec">${sech('02','Meals',entries(k).length+' items')}`;
+  h+=`<button class="btn full" data-a="pasteLog" style="margin-bottom:10px">Paste log</button>`;
   for(const s of SLOTS){
     const es=entries(k).filter(e=>e.slot===s),st=sum(es),rp=es.length?null:lastSlot(s,k);
     h+=`<div class="slot"><div class="card"><div class="sloth"><span class="nm">${s}</span><span class="k">${es.length?fmt(st.kcal)+' kcal':''}</span><button class="plus" data-a="add" data-slot="${s}" aria-label="Add to ${s}">+</button></div>
@@ -373,7 +450,7 @@ function vToday(){
   </div></div>`;
   return h;
 }
-function foodRow(f,act){return `<button class="row" data-a="${act}" data-id="${f.id}"><span class="nm">${esc(f.name)}<small>${act==='editFood'&&f.src==='seed'?'generic · ':''}per 100 g · P ${r1(f.p)} · C ${r1(f.c)} · F ${r1(f.f)}${f.serving?' · '+esc(f.serving.label)+' '+r0(f.serving.g)+' g':''}</small></span><span class="k">${fmt(f.kcal)}<small>kcal</small></span></button>`}
+function foodRow(f,act){return `<button class="row" data-a="${act}" data-id="${f.id}"><span class="nm">${esc(f.name)}<small>${act==='editFood'&&f.src==='seed'?'generic · ':act==='editFood'&&f.src==='est'?'estimate · ':''}per 100 g · P ${r1(f.p)} · C ${r1(f.c)} · F ${r1(f.f)}${f.serving?' · '+esc(f.serving.label)+' '+r0(f.serving.g)+' g':''}</small></span><span class="k">${fmt(f.kcal)}<small>kcal</small></span></button>`}
 function mealRow(m,act){const t=mealSum(m);return `<button class="row" data-a="${act}" data-id="${m.id}"><span class="nm">${esc(m.name)}<small>${mealItems(m).length} items · P ${r0(t.p)} · C ${r0(t.c)} · F ${r0(t.f)}</small></span><span class="k">${fmt(t.kcal)}<small>kcal</small></span></button>`}
 const match=(name,q)=>{const n=name.toLowerCase();return q.toLowerCase().split(/\s+/).filter(Boolean).every(w=>n.includes(w))};
 function foodsList(){
@@ -382,12 +459,12 @@ function foodsList(){
   const ms=S.meals.filter(m=>match(m.name,q));return ms.length?ms.map(m=>mealRow(m,'editMeal')).join(''):'<div class="empty">No meals yet.</div>';
 }
 function vFoods(){
-  const ng=S.foods.filter(f=>f.src==='seed').length;if(!ng)ui.gen=false;
+  const ng=S.foods.filter(isEst).length;if(!ng)ui.gen=false;
   return `<div class="top"><div><div class="micro">Library</div><h1>Foods</h1></div></div>
   <div class="stack"><div class="seg"><button data-a="seg" data-s="foods" class="${ui.seg==='foods'?'on':''}">Ingredients · ${S.foods.length}</button><button data-a="seg" data-s="meals" class="${ui.seg==='meals'?'on':''}">Meals · ${S.meals.length}</button></div>
   <input class="inp txt" id="fq" placeholder="Search" value="${esc(ui.q)}" autocomplete="off">
   <div class="btns">${ui.seg==='foods'?'<button class="btn pri" data-a="newFood">New ingredient</button><button class="btn" data-a="usdaLib">Search USDA</button>':'<button class="btn pri" data-a="newMeal">New meal</button>'}</div>
-  ${ui.seg==='foods'&&ng?notice(ui.gen?'Showing '+ng+' with generic macros, most eaten first. Tap one and enter your label.':ng+' ingredient'+(ng>1?'s':'')+' still use generic macros.',`<button class="btn sm" data-a="gen">${ui.gen?'Show all':'Show'}</button>`):''}
+  ${ui.seg==='foods'&&ng?notice(ui.gen?'Showing '+ng+' with generic or estimated macros, most eaten first. Tap one and enter your label.':ng+' ingredient'+(ng>1?'s':'')+' still use generic or estimated macros.',`<button class="btn sm" data-a="gen">${ui.gen?'Show all':'Show'}</button>`):''}
   <div class="card list" id="flist" style="padding:0;overflow:hidden">${foodsList()}</div></div>`;
 }
 function weightSeries(){
@@ -571,7 +648,21 @@ function vSettings(){
     </ol></details>
     <details><summary>Accepted paste formats</summary><ol><li><code>2026-10-11 active=612 resting=1890</code></li><li><code>2026-10-12 weight=185.4</code> (in your weight unit, or add <code>lb</code> / <code>kg</code>)</li><li><code>612 1890</code> (assumed to be yesterday)</li><li>Several lines at once, one day per line. An empty <code>weight=</code> is skipped.</li></ol></details>
   </div>
-  <div class="sec">${sech('05','Backup')}<div class="stack">
+  <div class="sec">${sech('05','Log by chat')}
+    <p class="note" style="margin-top:0">Describe what you ate to Claude in a Shortcut, then tap Paste log on Today. Saved ingredients and meals use your own macros; anything else comes in as an estimate you can correct later.</p>
+    <div class="stack"><button class="btn full" data-a="copyPrompt">Copy Shortcut prompt</button></div>
+    <details style="margin-top:12px"><summary>Shortcut steps</summary><ol>
+      <li>Tap <b>Copy Shortcut prompt</b> above. It includes your ingredient and meal names, so copy it again after adding new ones.</li>
+      <li>Shortcuts app, new shortcut, name it <code>Log Food</code>.</li>
+      <li>Add <b>Ask for Input</b>: Text, prompt <code>What did you eat?</code></li>
+      <li>Add <b>Text</b>: paste the prompt, then insert the <code>Ask for Input</code> variable on the last line.</li>
+      <li>Add <b>Ask Claude</b> (from the Claude app) and pass it the <code>Text</code>.</li>
+      <li>Add <b>Copy to Clipboard</b> with the Ask Claude result.</li>
+      <li>Run it, open Fuel, tap <b>Paste log</b>, check the preview, tap Add.</li>
+    </ol></details>
+    <details><summary>Accepted line formats</summary><ol><li><code>lunch | Chicken breast, cooked | 180 g</code></li><li><code>dinner | salmon fillet, baked | 170 g | kcal=350 p=37 c=0 f=21</code></li><li><code>breakfast | Oats bowl | 1x</code> (a saved meal)</li><li><code>snacks | Egg, whole | 2 eggs</code> (uses the saved serving size)</li><li>A line with only <code>yesterday</code> or <code>2026-10-11</code> dates the lines after it. Otherwise lines go to the day you are viewing.</li></ol></details>
+  </div>
+  <div class="sec">${sech('06','Backup')}<div class="stack">
     <div class="card"><div class="kv"><span class="k">Last backup</span><span class="v" ${ba===null||ba>=7?'style="color:var(--warn)"':''}>${ba===null?'Never':shortDate(ymd(new Date(S.meta.lastBackup)))+' · '+(ba?ba+' d ago':'today')}</span></div></div>
     <div class="btns"><button class="btn ${ba===null||ba>=7?'pri':''}" data-a="export">Back up now</button><button class="btn" data-a="import">Import backup</button></div>
     <button class="btn dan full" data-a="reset">Erase all data</button>
@@ -707,8 +798,8 @@ function openFood(f,ret){
   <label class="field"><span class="micro">Values below are per (g)</span><input id="fper" inputmode="decimal" value="100"></label><div class="grid4">${fld('Kcal','fk',v.kcal)}${fld('Protein','fp',v.p)}${fld('Carbs','fc',v.c)}${fld('Fat','ff',v.f)}</div>
   <div class="micro">Optional serving</div><div class="grid2">${fld('Name, e.g. egg','fsl',v.serving?v.serving.label:'',1)}${fld('Grams each','fsg',v.serving?v.serving.g:'')}</div>
   ${f?'<label class="field"><span class="micro">Past logs</span><select id="fpast"><option value="1">Update past entries too</option><option value="0">Future entries only</option></select></label>':''}
-  <p class="note" style="margin:0">${f&&f.src==='seed'?'Generic values. ':''}To copy a label, set the first field to the label’s serving size in grams and type the label numbers as printed.</p>
-  <div class="btns">${f?'<button class="btn dan" data-a="foodDel">Delete</button>':''}<button class="btn pri" data-a="foodOk">Save</button></div></div>`,f&&f.src==='seed'?'Library · generic':'Library');
+  <p class="note" style="margin:0">${f&&f.src==='seed'?'Generic values. ':f&&f.src==='est'?'Estimated by Claude. ':''}To copy a label, set the first field to the label’s serving size in grams and type the label numbers as printed.</p>
+  <div class="btns">${f?'<button class="btn dan" data-a="foodDel">Delete</button>':''}<button class="btn pri" data-a="foodOk">Save</button></div></div>`,f&&f.src==='seed'?'Library · generic':f&&f.src==='est'?'Library · estimate':'Library');
 }
 /* meal editor */
 function openMeal(m){ctx.meal=m?{id:m.id,name:m.name,items:mealItems(m).map(i=>({...i}))}:{name:'',items:[]};drawMeal()}
@@ -727,6 +818,22 @@ function openHealthManual(){
   <div class="grid2"><label class="field"><span class="micro">Active kcal</span><input id="ha" inputmode="decimal" value="${h.active||''}"></label><label class="field"><span class="micro">Resting kcal</span><input id="hr" inputmode="decimal" value="${h.resting||''}"></label></div>
   <label class="field"><span class="micro">Or paste Shortcut output</span><input class="txt" id="hp" placeholder="2026-10-11 active=612 resting=1890"></label>
   <button class="btn pri full" data-a="healthOk">Save</button></div>`,'Apple Health');
+}
+/* paste log */
+function openPaste(text){
+  ctx.paste={text:text||''};
+  sheet('Paste log',`<div class="stack"><label class="field"><span class="micro">Lines from Claude</span><textarea id="pl" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="lunch | chicken breast | 180 g&#10;dinner | salmon, baked | 170 g | kcal=350 p=37 c=0 f=21">${esc(ctx.paste.text)}</textarea></label>
+  <div id="plout">${pasteOut()}</div>
+  <button class="btn full" data-a="copyPrompt">Copy Shortcut prompt</button>
+  <p class="note" style="margin:0">Saved ingredients and meals use your macros. Anything else is added as a new ingredient with Claude’s estimate.</p></div>`,'Add to '+niceDate(ui.date));
+}
+function pasteOut(){
+  const items=parseLog(ctx.paste.text,ui.date),ok=items.filter(i=>i.kind!=='err');
+  if(!items.length)return ctx.paste.text.trim()?'<div class="empty">No log lines found. Each line needs: slot | name | amount</div>':'';
+  const tag={meal:'saved meal',food:'saved ingredient',new:'new · estimate'};
+  const t=sum(ok);
+  return `<div class="card list" style="padding:0;overflow:hidden;margin-bottom:12px">${items.map(i=>`<div class="row"><span class="nm">${esc(i.name)}<small class="${i.kind==='err'?'bad':''}">${i.kind==='err'?esc(i.msg):esc(i.slot)+(i.k!==ui.date?' · '+shortDate(i.k):'')+' · '+(i.kind==='meal'?i.scale+'×':r0(i.g)+' g')+' · '+tag[i.kind]}</small></span><span class="k">${i.kind==='err'?'<small>skipped</small>':fmt(i.kcal)+`<small>P ${r0(i.p)} · C ${r0(i.c)} · F ${r0(i.f)}</small>`}</span></div>`).join('')}</div>
+  <button class="btn pri full" data-a="plOk" ${ok.length?'':'disabled'}>${ok.length?'Add '+ok.length+' item'+(ok.length>1?'s':'')+' · '+fmt(t.kcal)+' kcal':'Nothing to add'}</button>`;
 }
 function flash(el){const o=el.textContent;el.textContent='✓';el.disabled=true;setTimeout(()=>{if(el.isConnected){el.textContent=o;el.disabled=false}},900)}
 let armed=null;
@@ -800,7 +907,7 @@ const A={
     const sl=$('#fsl').value.trim(),sg=num($('#fsg').value);v.serving=sl&&sg>0?{label:sl,g:sg}:null;
     let f=ctx.food.id&&food(ctx.food.id);
     let fixed=0;
-    if(f){const ch=['name','kcal','p','c','f'].some(x=>f[x]!==v[x]),past=$('#fpast').value==='1';Object.assign(f,v);if(f.src==='seed')f.src='label';if(ch&&past)fixed=relog(f)}
+    if(f){const ch=['name','kcal','p','c','f'].some(x=>f[x]!==v[x]),past=$('#fpast').value==='1';Object.assign(f,v);if(isEst(f))f.src='label';if(ch&&past)fixed=relog(f)}
     else{f=Object.assign({id:uid(),src:'manual'},v);S.foods.push(f)}
     save();if(ctx.food.ret==='pick')openAmount(f);else{closeSheet();render();if(fixed)toast('Updated '+fixed+' past entr'+(fixed>1?'ies':'y'))}
   },
@@ -820,6 +927,20 @@ const A={
     let t='';try{t=await navigator.clipboard.readText()}catch(e){}
     const r=t?parseHealth(t):{n:0,w:0};
     if(r.n||r.w){render();toast(healthMsg(r))}else{openHealthManual();if(t)toast('Clipboard did not look like Health data')}
+  },
+  async pasteLog(){
+    let t='';try{t=await navigator.clipboard.readText()}catch(e){}
+    openPaste(t&&parseLog(t,ui.date).length?t:'');
+  },
+  plOk(){
+    const items=parseLog(ctx.paste.text,ui.date).filter(i=>i.kind!=='err');if(!items.length)return toast('Nothing to add');
+    const r=commitLog(items),ks=[...new Set(items.map(i=>i.k))];if(ks.length===1)ui.date=ks[0];
+    closeSheet();render();toast('Added '+r.n+' item'+(r.n>1?'s':'')+(r.nf?' · '+r.nf+' new ingredient'+(r.nf>1?'s':''):''));
+  },
+  async copyPrompt(){
+    const p=logPrompt();
+    try{await navigator.clipboard.writeText(p);toast('Prompt copied')}
+    catch(e){if(!$('#pl'))openPaste('');const a=$('#pl');a.value=p;a.focus();a.select();toast('Copy the selected text')}
   },
   healthManual(){openHealthManual()},
   healthOk(){
@@ -843,6 +964,7 @@ document.addEventListener('input',ev=>{
   const t=ev.target;
   if(t.id==='fq'){ui.q=t.value;$('#flist').innerHTML=foodsList()}
   else if(t.id==='pq'){ctx.pick.q=t.value;if(ctx.pick.tab!=='usda')$('#plist').innerHTML=pickerList()}
+  else if(t.id==='pl'){ctx.paste.text=t.value;$('#plout').innerHTML=pasteOut()}
   else if(t.id==='amt'){ctx.amt.val=t.value;$('#aout').innerHTML=amtOut()}
   else if(t.dataset.ml!=null){ctx.ml.items[+t.dataset.ml].g=num(t.value);$('#mlout').innerHTML=mlOut()}
 });
