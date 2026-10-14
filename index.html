@@ -115,6 +115,7 @@ h1{font-family:var(--serif);font-weight:400;font-size:40px;line-height:1;margin:
 .inp.txt,.field input.txt,.field select{font-family:var(--sans)}
 .field textarea{width:100%;height:132px;background:var(--s2);border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-size:13px;line-height:1.45;font-family:var(--mono);color:var(--text);outline:none;resize:none;-webkit-appearance:none;appearance:none}
 .field textarea:focus{border-color:var(--acc)}
+.row .nm small.amt{color:var(--mut)}
 .row .nm small.bad,.wflag{color:var(--warn)}
 .note{font-size:13px;line-height:1.5;color:var(--mut);margin:0}
 .note.warn{color:var(--warn)}
@@ -270,7 +271,7 @@ const day=k=>S.log[k]||(S.log[k]={entries:[],complete:false});
 const entries=k=>(S.log[k]&&S.log[k].entries)||[];
 const sum=es=>es.reduce((t,x)=>({kcal:t.kcal+x.kcal,p:t.p+x.p,c:t.c+x.c,f:t.f+x.f}),{kcal:0,p:0,c:0,f:0});
 const mkEntry=(f,g,slot,group)=>({id:uid(),slot,foodId:f.id,name:f.name,g,kcal:f.kcal*g/100,p:f.p*g/100,c:f.c*g/100,f:f.f*g/100,group:group||''});
-const cloneEntry=(e,slot)=>{const f=food(e.foodId);return f?mkEntry(f,e.g,slot||e.slot,e.group):{...e,id:uid(),slot:slot||e.slot}};
+const cloneEntry=(e,slot)=>{const f=food(e.foodId);return f?Object.assign(mkEntry(f,e.g,slot||e.slot,e.group),e.amt?{amt:e.amt}:{}):{...e,id:uid(),slot:slot||e.slot}};
 const dayKcal=k=>sum(entries(k)).kcal;
 const isComplete=k=>!!(S.log[k]&&S.log[k].complete&&entries(k).length);
 const mealItems=m=>m.items.filter(i=>food(i.foodId));
@@ -397,7 +398,7 @@ const toks=s=>String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').re
 function findByName(list,name,fuzzy){ // exact first; then a single item whose words contain (or are contained in) the pasted words
   const t=toks(name);if(!t.length)return null;const key=t.join(' ');
   const ex=list.find(x=>toks(x.name).join(' ')===key);if(ex||!fuzzy)return ex||null;
-  const a=list.filter(x=>{const n=toks(x.name);return t.every(w=>n.includes(w))});if(a.length===1)return a[0];if(a.length)return null;
+  const a=list.filter(x=>{const n=toks(x.name);return t.every(w=>n.includes(w))&&(fuzzy!=='near'||toks(x.name.split(',')[0]).every(w=>t.includes(w)))}); // near: the saved food's main name must be fully said (Almonds is not Almond milk)if(a.length===1)return a[0];if(a.length)return null;
   if(fuzzy==='near')return null; // lines with their own macros: never match a shorter generic name inside a branded one
   const b=list.filter(x=>{const n=toks(x.name);return n.every(w=>t.includes(w))});return b.length===1?b[0]:null;
 }
@@ -414,10 +415,15 @@ function parseLog(text,base){
     let slot=SLOT_ALIAS[parts[0].toLowerCase()]||null;if(slot)parts.shift();
     const name=(parts.shift()||'').replace(/\s+/g,' ');if(!name)continue;
     const it={k,slot:slot||slotNow(),name,kind:'err',msg:''};out.push(it);
-    const amt=parts.length&&!/[=:]/.test(parts[0])?parts.shift():'',tail=' '+parts.join(' ');
+    const amt=parts.length&&!/[=:]/.test(parts[0])?parts.shift():'';
+    let tail=' '+parts.filter(x=>/[=:]/.test(x)).join(' ');
+    const asm=tail.match(/(?:^|\s)(?:as|amount|ate)\s*[=:]\s*(.+)$/i);if(asm)tail=tail.slice(0,asm.index); // as=8 oz chicken, 1 cup rice
+    let said=[...parts.filter(x=>!/[=:]/.test(x)),asm?asm[1]:''].map(x=>x.trim()).filter(Boolean).join(', ');
     const am=amt.match(new RegExp('^'+N+'\\s*(.*)$'));let g=0,cnt=0;
     if(am){const v=num(am[1]),u=am[2].toLowerCase();
-      if(!u||/^(g|gr|grams?|ml)$/.test(u))g=v;else if(/^(oz|ounces?)$/.test(u))g=v*OZ;else if(/^(kg|kilograms?)$/.test(u))g=v*1000;else if(/^(lbs?|pounds?)$/.test(u))g=v*1000*KG_PER_LB;else cnt=v}
+      if(!u||/^(g|gr|grams?|ml)$/.test(u))g=v;else if(/^(oz|ounces?)$/.test(u))g=v*OZ;else if(/^(kg|kilograms?)$/.test(u))g=v*1000;else if(/^(lbs?|pounds?)$/.test(u))g=v*1000*KG_PER_LB;else cnt=v;
+      if(!said&&u&&!/^(g|gr|grams?)$/.test(u)&&!/^x$/.test(u))said=amt}
+    it.amt=said.slice(0,120);
     const meal=findByName(S.meals.filter(m=>mealItems(m).length),name,false);
     if(meal&&!g){it.kind='meal';it.ref=meal;it.scale=cnt||1;const t=mealSum(meal);it.g=0;for(const x of ['kcal','p','c','f'])it[x]=t[x]*it.scale;continue}
     let kc=mac(tail,'kcal|cal|cals|calories');const pr=mac(tail,'p|pro|protein'),cb=mac(tail,'c|carb|carbs'),ft=mac(tail,'f|fat|fats');
@@ -446,11 +452,11 @@ function commitLog(items){ // returns {n: entries added, nf: new ingredients}
   let n=0,nf=0;
   for(const it of items){
     if(it.kind==='meal'){const es=mealItems(it.ref).filter(i=>i.g>0).map(i=>mkEntry(food(i.foodId),r1(i.g*it.scale),it.slot,it.ref.name));day(it.k).entries.push(...es);n+=es.length}
-    else if(it.kind==='food'){const e=mkEntry(it.ref,r1(it.g),it.slot);if(it.own)Object.assign(e,{kcal:it.kcal,p:it.p,c:it.c,f:it.f});day(it.k).entries.push(e);n++}
+    else if(it.kind==='food'){const e=mkEntry(it.ref,r1(it.g),it.slot);if(it.amt)e.amt=it.amt;if(it.own)Object.assign(e,{kcal:it.kcal,p:it.p,c:it.c,f:it.f});day(it.k).entries.push(e);n++}
     else if(it.kind==='new'){
       let f=findByName(S.foods,it.name,false);
       if(!f){const s=100/it.g;f={id:uid(),name:it.name,kcal:r1(it.kcal*s),p:r1(it.p*s),c:r1(it.c*s),f:r1(it.f*s),serving:null,src:'est'};S.foods.push(f);nf++}
-      const e=mkEntry(f,r1(it.g),it.slot);Object.assign(e,{kcal:it.kcal,p:it.p,c:it.c,f:it.f});day(it.k).entries.push(e);n++;
+      const e=mkEntry(f,r1(it.g),it.slot);Object.assign(e,{kcal:it.kcal,p:it.p,c:it.c,f:it.f},it.amt?{amt:it.amt}:{});day(it.k).entries.push(e);n++;
     }
   }
   if(n)save();return {n,nf};
@@ -459,11 +465,12 @@ function logPrompt(){
   const foods=S.foods.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(f=>'- '+f.name+(f.serving?' (1 '+f.serving.label+' = '+r0(f.serving.g)+' g)':'')).join('\n');
   const meals=S.meals.filter(m=>mealItems(m).length).map(m=>'- '+m.name).join('\n');
   return ['You turn a food description into log lines for a nutrition app. Output only the lines. No intro, no notes, no markdown, no blank lines.','',
-  'Format, one line per food:','Slot | Name | grams g | kcal=N p=N c=N f=N','',
+  'Format, one line per food:','Slot | Name | grams g | kcal=N p=N c=N f=N | amount as I said it','',
   'Rules:',
-  '0. If I give calories or macros (like 547 cal, 73g protein, 28g carbs, 13.5g fat), they are exact. Write ONE line for the whole thing, named as I said it, with my numbers copied unchanged. Do not split it into ingredients and do not recalculate. Fill in only the macros I did not give. Still estimate the grams.',
+  '0. If I give calories or macros (like 547 cal, 73g protein, 28g carbs, 13.5g fat), they are exact. Write ONE line for the whole thing, named as I said it, with my numbers copied unchanged. Do not split it into ingredients and do not recalculate. Fill in only the macros I did not give. Still estimate the grams. In the last column list each part with its amount as I said it (or your estimate), like 8 oz chicken, 1 cup rice, 2 tbsp bbq.',
   '1. Slot is Breakfast, Lunch, Dinner or Snacks. If not said, pick the likeliest.',
-  '2. Amount is always grams, like 32 g. Convert scoops, cups, pieces and ounces to grams. Estimate if vague.',
+  '2. The grams column is always grams, like 32 g. Convert scoops, cups, pieces and ounces to grams. Estimate if vague.',
+  '2b. The last column is the amount in my words, like 1 scoop, 8 oz, 2 eggs, 1 cup. If I gave no amount, write your estimate the same way. Never leave it out.',
   '3. Every food line MUST end with kcal, p (protein g), c (carbs g) and f (fat g) for the amount eaten. Never leave them out.',
   '4. If a brand, product or flavour is named, use that product\'s nutrition label values, not generic values. Name it Brand Product, Flavour.',
   '5. If a shake was mixed with milk or another drink, add that as its own line. Water adds nothing.',
@@ -472,11 +479,11 @@ function logPrompt(){
   '8. If it was yesterday, the first line is only the word: yesterday','',
   'Examples:',
   'Input: gold standard whey double rich chocolate shake for breakfast',
-  'Output:','Breakfast | Optimum Nutrition Gold Standard Whey, Double Rich Chocolate | 31 g | kcal=120 p=24 c=3 f=1.5','',
+  'Output:','Breakfast | Optimum Nutrition Gold Standard Whey, Double Rich Chocolate | 31 g | kcal=120 p=24 c=3 f=1.5 | 1 scoop','',
   'Input: dinner chicken rice bbq 547cal, 73g protein, 28g carbs, 13.5g fat',
-  'Output:','Dinner | Chicken rice bbq | 400 g | kcal=547 p=73 c=28 f=13.5','',
+  'Output:','Dinner | Chicken rice bbq | 400 g | kcal=547 p=73 c=28 f=13.5 | 8 oz chicken, 3/4 cup rice, 2 tbsp bbq sauce','',
   'Input: two scrambled eggs and a banana',
-  'Output:','Breakfast | Eggs, scrambled | 100 g | kcal=150 p=10 c=1 f=11','Breakfast | Banana | 118 g | kcal=105 p=1.3 c=27 f=0.4','',
+  'Output:','Breakfast | Eggs, scrambled | 100 g | kcal=150 p=10 c=1 f=11 | 2 eggs','Breakfast | Banana | 118 g | kcal=105 p=1.3 c=27 f=0.4 | 1 medium','',
   'MY INGREDIENTS:',foods||'- (none)','','MY MEALS:',meals||'- (none)','','Input: '].join('\n');
 }
 
@@ -641,7 +648,7 @@ function notices(pos){
   return h?`<div class="status">${h}</div>`:'';
 }
 const pcf=t=>`P ${r0(t.p)} · C ${r0(t.c)} · F ${r0(t.f)}`;
-const entryRow=(e,sub)=>`<button class="row${sub?' sub':''}" data-a="editEntry" data-id="${e.id}"><span class="nm">${esc(e.name)}<small>${r0(e.g)} g · ${pcf(e)}</small></span><span class="k">${fmt(e.kcal)}</span></button>`;
+const entryRow=(e,sub)=>`<button class="row${sub?' sub':''}" data-a="editEntry" data-id="${e.id}"><span class="nm">${esc(e.name)}${e.amt?`<small class="amt">${esc(e.amt)}</small>`:''}<small>${r0(e.g)} g · ${pcf(e)}</small></span><span class="k">${fmt(e.kcal)}</span></button>`;
 function slotRows(k,s,es){ // a saved meal logged as a group shows as one row that expands to its ingredients
   const seen={};let h='';
   for(const e of es){
@@ -1089,7 +1096,8 @@ function mlOut(){const t=sum(ctx.ml.items.map(i=>mkEntry(food(i.foodId),i.g)));r
 /* entry edit */
 function openEntry(id){
   const e=entries(ui.date).find(x=>x.id===id);if(!e)return;ctx.entry=e;
-  sheet(e.name,`<div class="stack"><label class="field"><span class="micro">Grams</span><input id="eg" inputmode="decimal" value="${r1(e.g)}"></label>
+  sheet(e.name,`<div class="stack"><label class="field"><span class="micro">Amount eaten</span><input class="txt" id="ea" value="${esc(e.amt||'')}" placeholder="e.g. 8 oz chicken, 1 cup rice" autocapitalize="off"></label>
+  <label class="field"><span class="micro">Grams (sets the macros)</span><input id="eg" inputmode="decimal" value="${r1(e.g)}"></label>
   <label class="field"><span class="micro">Meal</span><select id="es">${SLOTS.map(s=>`<option ${s===e.slot?'selected':''}>${s}</option>`).join('')}</select></label>
   <div class="btns"><button class="btn dan" data-a="entryDel">Delete</button><button class="btn pri" data-a="entryOk">Save</button></div></div>`,fmt(e.kcal)+' kcal logged');
 }
@@ -1173,7 +1181,7 @@ function pasteOut(){
   const tag={meal:'saved meal',food:'saved ingredient',new:'new · estimate'},t=sum(ok),u=wUnit();
   const hrow=o=>`<div class="row"><span class="nm">Apple Health<small>${shortDate(o.k)}${o.active!=null?' · active '+fmt(o.active)+' · resting '+fmt(o.resting):''}${o.kg!=null&&o.active!=null?' · weight '+r1(toDisp(o.kg))+' '+u:''}</small></span><span class="k">${o.active!=null?fmt(o.active+o.resting)+'<small>kcal burn</small>':r1(toDisp(o.kg))+'<small>'+u+' weigh-in</small>'}</span></div>`;
   const label=ok.length?'Add '+ok.length+' item'+(ok.length>1?'s':'')+' · '+fmt(t.kcal)+' kcal'+(hs.length?' + Health':''):hs.length?'Import Health data':'Nothing to add';
-  return `<div class="card list" style="padding:0;overflow:hidden;margin-bottom:12px">${items.map(i=>`<div class="row"><span class="nm">${esc(i.name)}<small class="${i.kind==='err'?'bad':''}">${i.kind==='err'?esc(i.msg):esc(i.slot)+(i.k!==ui.date?' · '+shortDate(i.k):'')+' · '+(i.kind==='meal'?i.scale+'×':r0(i.g)+' g')+' · '+(i.own?'saved · pasted macros':tag[i.kind])}</small></span><span class="k">${i.kind==='err'?'<small>skipped</small>':fmt(i.kcal)+`<small>P ${r0(i.p)} · C ${r0(i.c)} · F ${r0(i.f)}</small>`}</span></div>`).join('')}${hs.map(hrow).join('')}</div>
+  return `<div class="card list" style="padding:0;overflow:hidden;margin-bottom:12px">${items.map(i=>`<div class="row"><span class="nm">${esc(i.name)}<small class="${i.kind==='err'?'bad':''}">${i.kind==='err'?esc(i.msg):esc(i.slot)+(i.k!==ui.date?' · '+shortDate(i.k):'')+' · '+(i.kind==='meal'?i.scale+'×':(i.amt?esc(i.amt)+' · ':'')+r0(i.g)+' g')+' · '+(i.own?'saved · pasted macros':tag[i.kind])}</small></span><span class="k">${i.kind==='err'?'<small>skipped</small>':fmt(i.kcal)+`<small>P ${r0(i.p)} · C ${r0(i.c)} · F ${r0(i.f)}</small>`}</span></div>`).join('')}${hs.map(hrow).join('')}</div>
   <button class="btn pri full" data-a="plOk" ${ok.length||hs.length?'':'disabled'}>${label}</button>`;
 }
 async function openSnaps(){
@@ -1203,7 +1211,7 @@ const A={
   quickMeal(d,el){const m=S.meals.find(x=>x.id===d.id),es=mealItems(m).filter(i=>i.g>0).map(i=>mkEntry(food(i.foodId),i.g,ctx.pick.slot,m.name));if(!es.length)return;day(ui.date).entries.push(...es);save();flash(el);toast(m.name+' added to '+ctx.pick.slot)},
   copySlot(d){const es=entries(d.k).filter(e=>e.slot===d.slot);if(!es.length)return;day(ui.date).entries.push(...es.map(e=>cloneEntry(e)));save();render();toast(d.slot+' copied from '+shortDate(d.k))},
   days(){openDays()},
-  daySave(){const es=entries(ui.date);if(!es.length)return;const name=$('#dn').value.trim()||'Usual day '+(S.days.length+1);S.days.push({id:uid(),name,entries:es.map(e=>({slot:e.slot,foodId:e.foodId,name:e.name,g:e.g,kcal:e.kcal,p:e.p,c:e.c,f:e.f,group:e.group||''}))});save();openDays();toast('Saved '+name)},
+  daySave(){const es=entries(ui.date);if(!es.length)return;const name=$('#dn').value.trim()||'Usual day '+(S.days.length+1);S.days.push({id:uid(),name,entries:es.map(e=>({slot:e.slot,foodId:e.foodId,name:e.name,g:e.g,kcal:e.kcal,p:e.p,c:e.c,f:e.f,group:e.group||'',...(e.amt?{amt:e.amt}:{})}))});save();openDays();toast('Saved '+name)},
   dayLog(d){const t=S.days.find(x=>x.id===d.id);if(!t)return;day(ui.date).entries.push(...t.entries.map(e=>cloneEntry(e)));save();closeSheet();render();toast(t.name+' logged')},
   dayDel(d,el){if(!twoTap(el,'dd'+d.id,'Sure?'))return;S.days=S.days.filter(x=>x.id!==d.id);save();openDays()},
   add(d){openPicker('log',d.slot)},
@@ -1218,12 +1226,14 @@ const A={
   amtOk(){
     const g=amtGrams();if(g<=0)return toast('Enter an amount');const p=ctx.pick,f=ctx.amt.food;
     if(p.mode==='meal'){ctx.meal.items.push({foodId:f.id,g:r1(g)});drawMeal();return}
-    day(ui.date).entries.push(mkEntry(f,r1(g),p.slot));save();closeSheet();render();toast('Added to '+p.slot);
+    const a=ctx.amt,e=mkEntry(f,r1(g),p.slot),v=num(a.val);
+    if(a.unit==='oz')e.amt=r1(v)+' oz';else if(a.unit==='srv')e.amt=r1(v)+' '+f.serving.label+(v===1||/s$/.test(f.serving.label)?'':'s');
+    day(ui.date).entries.push(e);save();closeSheet();render();toast('Added to '+p.slot);
   },
   mlScale(d){ctx.ml.items.forEach(i=>i.g=r1(i.base*+d.n));drawMealLog()},
   mlOk(){const l=ctx.ml,es=l.items.filter(i=>i.g>0).map(i=>mkEntry(food(i.foodId),i.g,ctx.pick.slot,l.meal.name));if(!es.length)return;day(ui.date).entries.push(...es);save();closeSheet();render();toast(l.meal.name+' added')},
   editEntry(d){openEntry(d.id)},
-  entryOk(){const e=ctx.entry,g=num($('#eg').value);if(g<=0)return toast('Enter grams');const k=g/e.g;e.kcal*=k;e.p*=k;e.c*=k;e.f*=k;e.g=g;e.slot=$('#es').value;save();closeSheet();render()},
+  entryOk(){const e=ctx.entry,g=num($('#eg').value);if(g<=0)return toast('Enter grams');const k=g/e.g;e.kcal*=k;e.p*=k;e.c*=k;e.f*=k;e.g=g;e.slot=$('#es').value;const a=$('#ea').value.trim().slice(0,120);if(a)e.amt=a;else delete e.amt;save();closeSheet();render()},
   entryDel(){const d=day(ui.date),old=d.entries,e=ctx.entry;d.entries=old.filter(x=>x.id!==e.id);save();closeSheet();render();toast(e.name+' deleted',()=>{d.entries=old;save();render()})},
   complete(){const d=day(ui.date);if(!d.complete&&!d.entries.length)return toast('Nothing logged for this day');d.complete=!d.complete;save();render();toast(d.complete?'Day complete. It now counts toward calibration':'Day reopened')},
   copyPrev(){
