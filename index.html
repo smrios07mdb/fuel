@@ -464,27 +464,32 @@ function commitLog(items){ // returns {n: entries added, nf: new ingredients}
 function logPrompt(){
   const foods=S.foods.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(f=>'- '+f.name+(f.serving?' (1 '+f.serving.label+' = '+r0(f.serving.g)+' g)':'')).join('\n');
   const meals=S.meals.filter(m=>mealItems(m).length).map(m=>'- '+m.name).join('\n');
-  return ['You turn a food description into log lines for a nutrition app. Output only the lines. No intro, no notes, no markdown, no blank lines.','',
-  'Format, one line per food:','Slot | Name | grams g | kcal=N p=N c=N f=N | amount as I said it','',
+  return ['Turn what I ate into log lines. Output only the lines. No intro, no notes, no markdown, no blank lines.','',
+  'Every food line has exactly 5 parts separated by |:','Slot | Name | grams g | kcal=N p=N c=N f=N | amount in my words','',
+  'The 5th part is required on every food line. It is the amount the way a person says it: 2 eggs, 1 scoop, 8 oz, 1 cup, 1 bowl. If I gave no amount, write your best guess the same way.','',
   'Rules:',
-  '0. If I give calories or macros (like 547 cal, 73g protein, 28g carbs, 13.5g fat), they are exact. Write ONE line for the whole thing, named as I said it, with my numbers copied unchanged. Do not split it into ingredients and do not recalculate. Fill in only the macros I did not give. Still estimate the grams. In the last column list each part with its amount as I said it (or your estimate), like 8 oz chicken, 1 cup rice, 2 tbsp bbq.',
   '1. Slot is Breakfast, Lunch, Dinner or Snacks. If not said, pick the likeliest.',
-  '2. The grams column is always grams, like 32 g. Convert scoops, cups, pieces and ounces to grams. Estimate if vague.',
-  '2b. The last column is the amount in my words, like 1 scoop, 8 oz, 2 eggs, 1 cup. If I gave no amount, write your estimate the same way. Never leave it out.',
-  '3. Every food line MUST end with kcal, p (protein g), c (carbs g) and f (fat g) for the amount eaten. Never leave them out.',
-  '4. If a brand, product or flavour is named, use that product\'s nutrition label values, not generic values. Name it Brand Product, Flavour.',
-  '5. If a shake was mixed with milk or another drink, add that as its own line. Water adds nothing.',
-  '6. Use a name from MY INGREDIENTS only when it is the same food (not just similar). Then copy it exactly, still with macros.',
-  '7. If a name from MY MEALS is said, write: Slot | meal name | 1x (or 0.5x, 2x) and nothing after it.',
-  '8. If it was yesterday, the first line is only the word: yesterday','',
+  '2. Grams is always a number of grams, like 100 g. Convert scoops, cups, pieces and ounces. Estimate if vague.',
+  '3. kcal, p (protein g), c (carbs g) and f (fat g) are for the amount eaten. Never leave them out.',
+  '4. If I give calories or macros, copy my numbers exactly. Write ONE line named as I said it. Do not split or recalculate. Fill in only missing macros. In part 5, list each part with its amount.',
+  '5. If a brand or flavour is named, use that product\'s label values. Name it Brand Product, Flavour.',
+  '6. A shake mixed with milk: the milk is its own line. Water adds nothing.',
+  '7. Use a name from MY INGREDIENTS only when it is the same food. Copy the name exactly.',
+  '8. If a name from MY MEALS is said, write only: Slot | meal name | 1x (or 0.5x, 2x)',
+  '9. If it was yesterday, the first line is only the word: yesterday','',
   'Examples:',
-  'Input: gold standard whey double rich chocolate shake for breakfast',
-  'Output:','Breakfast | Optimum Nutrition Gold Standard Whey, Double Rich Chocolate | 31 g | kcal=120 p=24 c=3 f=1.5 | 1 scoop','',
-  'Input: dinner chicken rice bbq 547cal, 73g protein, 28g carbs, 13.5g fat',
-  'Output:','Dinner | Chicken rice bbq | 400 g | kcal=547 p=73 c=28 f=13.5 | 8 oz chicken, 3/4 cup rice, 2 tbsp bbq sauce','',
-  'Input: two scrambled eggs and a banana',
-  'Output:','Breakfast | Eggs, scrambled | 100 g | kcal=150 p=10 c=1 f=11 | 2 eggs','Breakfast | Banana | 118 g | kcal=105 p=1.3 c=27 f=0.4 | 1 medium','',
-  'MY INGREDIENTS:',foods||'- (none)','','MY MEALS:',meals||'- (none)','','Input: '].join('\n');
+  'Input: 2 eggs','Output:','Breakfast | Egg, whole | 100 g | kcal=143 p=12.6 c=0.7 f=9.5 | 2 eggs','',
+  'Input: gold standard chocolate peanut butter shake with a cup of almond milk','Output:',
+  'Breakfast | Optimum Nutrition Gold Standard Whey, Chocolate Peanut Butter | 33 g | kcal=130 p=24 c=4 f=2 | 1 scoop',
+  'Breakfast | Almond milk, unsweetened | 240 g | kcal=36 p=1.4 c=1.4 f=2.9 | 1 cup','',
+  'Input: dinner chicken rice bbq 547cal, 73g protein, 28g carbs, 13.5g fat','Output:',
+  'Dinner | Chicken rice bbq | 400 g | kcal=547 p=73 c=28 f=13.5 | 8 oz chicken, 3/4 cup rice, 2 tbsp bbq sauce','',
+  'Input: arugula salad with a teaspoon of olive oil and lime for lunch','Output:',
+  'Lunch | Arugula | 40 g | kcal=10 p=1 c=1.5 f=0.3 | 2 cups',
+  'Lunch | Oil, olive, salad or cooking | 5 g | kcal=44 p=0 c=0 f=5 | 1 tsp',
+  'Lunch | Lime juice | 10 g | kcal=3 p=0 c=1 f=0 | 1 lime wedge','',
+  'Input: oats bowl','Output:','Breakfast | Oats bowl | 1x','',
+  'MY INGREDIENTS:',foods||'- (none)','','MY MEALS:',meals||'- (none)'].join('\n');
 }
 
 /* snapshots: rolling copies in IndexedDB, one per day plus one before each erase, import or restore */
@@ -938,8 +943,8 @@ const SP={
       <li>Tap <b>Copy Shortcut prompt</b> above. It includes your ingredient and meal names, so copy it again after adding new ones.</li>
       <li>Shortcuts app, new shortcut, name it <code>Log Food</code>.</li>
       <li>Add <b>Ask for Input</b>: Text, prompt <code>What did you eat?</code></li>
-      <li>Add <b>Text</b>: paste the prompt, then insert the <code>Ask for Input</code> variable right after <code>Input:</code> on the last line.</li>
-      <li>Add <b>Use Model</b> (Apple Intelligence), set to <b>ChatGPT</b>, Follow Up off, and pass it the <code>Text</code>.</li>
+      <li>Add <b>Text</b>: paste the prompt.</li>
+      <li>Add <b>Use Model</b> (Apple Intelligence; Private Cloud Compute works), Follow Up off. In its request put the <code>Text</code> variable, a blank line, then <code>Input:</code> followed by the <code>Ask for Input</code> variable.</li>
       <li>Add <b>Copy to Clipboard</b> with the <code>Response</code>.</li>
       <li>Run it, open Fuel, tap <b>Paste</b>, check the preview, tap Add.</li>
     </ol></details>
