@@ -398,7 +398,7 @@ const toks=s=>String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').re
 function findByName(list,name,fuzzy){ // exact first; then a single item whose words contain (or are contained in) the pasted words
   const t=toks(name);if(!t.length)return null;const key=t.join(' ');
   const ex=list.find(x=>toks(x.name).join(' ')===key);if(ex||!fuzzy)return ex||null;
-  const a=list.filter(x=>{const n=toks(x.name);return t.every(w=>n.includes(w))&&(fuzzy!=='near'||toks(x.name.split(',')[0]).every(w=>t.includes(w)))}); // near: the saved food's main name must be fully said (Almonds is not Almond milk)if(a.length===1)return a[0];if(a.length)return null;
+  const a=list.filter(x=>{const n=toks(x.name);return t.every(w=>n.includes(w))&&(fuzzy!=='near'||toks(x.name.split(',')[0]).every(w=>t.includes(w)))});if(a.length===1)return a[0];if(a.length)return null; // near: the saved food's main name must be fully said (Almonds is not Almond milk)
   if(fuzzy==='near')return null; // lines with their own macros: never match a shorter generic name inside a branded one
   const b=list.filter(x=>{const n=toks(x.name);return n.every(w=>t.includes(w))});return b.length===1?b[0]:null;
 }
