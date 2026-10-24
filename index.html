@@ -58,6 +58,21 @@ h1{font-family:var(--serif);font-weight:400;font-size:40px;line-height:1;margin:
 .sum .left.over,#pin b.over{color:var(--warn)}
 .sum .lu{font-size:15px;font-weight:600;margin-top:6px}
 .sum .of{font-size:13px;color:var(--faint);margin-top:3px}
+.sum{flex-wrap:wrap}
+.sum .wk{position:relative;flex:1 0 100%;display:flex;flex-direction:column;gap:7px;margin:0 -14px -14px;padding:12px 14px 14px;border-top:1px solid var(--line2);border-radius:0 0 14px 14px;font-size:13px;text-align:left;color:var(--text)}
+.wk .wl{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.wk .f{color:var(--faint)}
+.wk b{font-weight:600}.wk b.over{color:var(--warn)}
+.wk .chev{position:absolute;right:14px;top:12px;color:var(--dim);font-size:18px;line-height:1}
+.wk .wl:first-child{padding-right:18px}
+.wbar{position:relative;display:flex;height:20px;background:var(--line);border-radius:6px;overflow:hidden}
+.wbar>i{display:block;height:100%}
+.wbar .sd{background:var(--acc)}.wbar .so{background:var(--warn)}.wbar .sn{background:var(--acc);opacity:.4}
+.wbar .dl{position:absolute;top:0;bottom:0;width:1px;background:var(--bg)}
+.wbar .pt{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:var(--text)}
+.wbar .wkd{position:absolute;inset:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}
+.wbar .wkd span{display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;line-height:1;color:#fff}
+.wbar .wkd span.on{color:var(--bg)}
 .macros{flex:1;display:flex;flex-direction:column;gap:10px;min-width:0}
 .mrow .l{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px}
 .mrow .v{font-family:var(--mono);font-size:15px}
@@ -273,6 +288,31 @@ const sum=es=>es.reduce((t,x)=>({kcal:t.kcal+x.kcal,p:t.p+x.p,c:t.c+x.c,f:t.f+x.
 const mkEntry=(f,g,slot,group)=>({id:uid(),slot,foodId:f.id,name:f.name,g,kcal:f.kcal*g/100,p:f.p*g/100,c:f.c*g/100,f:f.f*g/100,group:group||''});
 const cloneEntry=(e,slot)=>{const f=food(e.foodId);return f?Object.assign(mkEntry(f,e.g,slot||e.slot,e.group),e.amt?{amt:e.amt}:{}):{...e,id:uid(),slot:slot||e.slot}};
 const dayKcal=k=>sum(entries(k)).kcal;
+/* week so far for the week holding k: complete days, open past days, today in progress */
+function weekSoFar(k){
+  const start=monday(k),t=today(),B=S.targets.kcal*7,ds=[];
+  for(let i=0;i<7;i++){const d=addDays(start,i),n=entries(d).length;
+    ds.push({k:d,v:d>t?0:dayKcal(d),s:d>t?'empty':isComplete(d)?'done':d===t?'now':n?'open':'empty'})}
+  const tot=s=>ds.filter(x=>x.s===s).reduce((a,x)=>a+x.v,0),cnt=s=>ds.filter(x=>x.s===s).length;
+  const done=tot('done'),open=tot('open'),now=tot('now'),total=done+open+now;
+  return {start,ds,B,done,open,now,total,left:B-total,nDone:cnt('done'),nOpen:cnt('open'),hasNow:cnt('now')>0,
+    elapsed:ds.filter(x=>x.k<=t).length,current:start===monday(t)};
+}
+function weekRow(k,w){
+  const pl=(n,x)=>n+' '+x+(n===1?'':'s'),sc=w.total>w.B?w.B/w.total:1,pc=v=>w.B?v/w.B*100*sc:0,over=w.left<0;
+  const solid=pc(w.done+w.open),tick=w.current&&w.elapsed<7?w.elapsed:0;
+  let bar=`<i class="sd" style="width:${pc(w.done)}%"></i><i class="so" style="width:${pc(w.open)}%"></i><i class="sn" style="width:${pc(w.now)}%"></i>`;
+  for(let i=1;i<7;i++)bar+=i===tick?`<span class="pt" style="left:${i/7*100}%"></span>`:`<span class="dl" style="left:${i/7*100}%"></span>`;
+  bar+=`<span class="wkd">${['M','T','W','Th','F','S','Su'].map((l,i)=>`<span class="${(i+.5)/7*100<solid?'on':''}">${l}</span>`).join('')}</span>`;
+  const parts=[];
+  if(w.nOpen)parts.push(`+ ${w.nOpen} open <span class="num">${fmt(w.open)}</span>`);
+  if(w.hasNow)parts.push(`+ today${w.nOpen?'':' so far'} <span class="num">${fmt(w.now)}</span>`);
+  parts.push(`<b class="num${over?' over':''}">${fmt(Math.abs(w.left))}</b> ${over?'over':'left'} of <span class="num">${fmt(w.B)}</span>`);
+  return `<button class="wk" data-a="goWeek" data-k="${k}" aria-label="This week: ${fmt(w.total)} of ${fmt(w.B)} kcal, ${fmt(Math.abs(w.left))} ${over?'over':'left'}. Open week view">
+  <span class="wl"><span class="micro">This week</span>${w.nDone?`<span class="num">${fmt(w.done)}</span><span class="f">· ${w.nDone} complete ·</span><span class="num">avg ${fmt(w.done/w.nDone)}</span>`:'<span class="f">no complete days yet</span>'}<span class="chev" aria-hidden="true">›</span></span>
+  <span class="wbar" aria-hidden="true">${bar}</span>
+  <span class="wl f">${parts.join(' · ')}</span></button>`;
+}
 const isComplete=k=>!!(S.log[k]&&S.log[k].complete&&entries(k).length);
 const mealItems=m=>m.items.filter(i=>food(i.foodId));
 const mealSum=m=>sum(mealItems(m).map(i=>mkEntry(food(i.foodId),i.g)));
@@ -668,13 +708,13 @@ function slotRows(k,s,es){ // a saved meal logged as a group shows as one row th
 }
 function vToday(){
   const k=ui.date,all=entries(k),t=sum(all),T=S.targets,isToday=k===today(),d=S.log[k]||{};
-  const td=tdee(),hb=healthTotal(k),burn=hb?(td.calibrated?hb*td.factor:hb):0,left=T.kcal-t.kcal,over=left<0;
+  const td=tdee(),hb=healthTotal(k),burn=hb?(td.calibrated?hb*td.factor:hb):0,left=T.kcal-t.kcal,over=left<0,w=weekSoFar(k);
   const mac=(l,v,tg,c)=>`<div class="mrow"><div class="l"><span class="micro">${l}</span><span class="v">${r0(v)}<small> / ${r0(tg)} g</small></span></div><div class="bar"><i style="width:${tg?clamp(v/tg*100,0,100):0}%;background:${tg&&v>tg*1.05?'var(--warn)':c}"></i></div></div>`;
   let h=`<div class="top"><div><div class="micro">${isToday?'Today':dayDiff(k,today())===1?'Yesterday':'Past day'}${d.complete?' · <span class="okc">complete</span>':all.length?' · open':''}</div><h1>${niceDate(k)}</h1></div>
   <div class="datenav"><button data-a="day" data-n="-1" aria-label="Previous day">‹</button>${isToday?'':'<button data-a="day" data-n="1" aria-label="Next day">›</button>'}<button class="tick${d.complete?' on':''}" data-a="complete" aria-pressed="${!!d.complete}" aria-label="${d.complete?'Day is complete. Tap to reopen':'Mark day complete'}">✓</button></div></div>`;
   h+=`<div class="card sum" id="sum"><div class="sl"><div class="left${over?' over':''}">${fmt(Math.abs(left))}</div><div class="lu">kcal ${over?'over':'left'}</div><div class="of"><span class="num">${fmt(t.kcal)}</span> of <span class="num">${fmt(T.kcal)}</span></div>${burn?`<div class="of">burn <span class="num">${fmt(burn)}</span> · net <span class="num">${signedK(t.kcal-burn)}</span></div>`:''}</div>
-  <div class="macros">${mac('Protein',t.p,T.p,'var(--mint)')}${mac('Carbs',t.c,T.c,'var(--blue)')}${mac('Fat',t.f,T.f,'var(--cream)')}</div></div>`;
-  pinHtml=`<b class="${over?'over':''}">${fmt(Math.abs(left))} kcal ${over?'over':'left'}</b><span>P ${r0(t.p)}/${r0(T.p)} · C ${r0(t.c)}/${r0(T.c)} · F ${r0(t.f)}/${r0(T.f)}</span>`;
+  <div class="macros">${mac('Protein',t.p,T.p,'var(--mint)')}${mac('Carbs',t.c,T.c,'var(--blue)')}${mac('Fat',t.f,T.f,'var(--cream)')}</div>${weekRow(k,w)}</div>`;
+  pinHtml=`<b class="${over?'over':''}">${fmt(Math.abs(left))} kcal ${over?'over':'left'}</b><span>wk ${fmt(Math.abs(w.left))} ${w.left<0?'over':'left'} · P ${r0(t.p)}/${r0(T.p)} · C ${r0(t.c)}/${r0(T.c)} · F ${r0(t.f)}/${r0(T.f)}</span>`;
   h+=statusSec(k)+(isToday?notices('top'):'');
   h+=`<div class="sec"><div class="btns quick"><button class="btn sm" data-a="paste">Paste</button><button class="btn sm" data-a="copyPrev">Copy last day</button><button class="btn sm" data-a="days">Usual days</button></div>`;
   for(const s of SLOTS){
@@ -1208,6 +1248,7 @@ const A={
   day(d){const k=addDays(ui.date,+d.n);if(k>today())return;ui.date=k;render()},
   close(){closeSheet();render()},
   goDay(d){ui.tab='today';ui.date=d.k;window.scrollTo(0,0);render()},
+  goWeek(d){ui.tab='progress';ui.pv='week';ui.week=monday(d.k);window.scrollTo(0,0);render()},
   week(d){const k=addDays(ui.week,7*+d.n);if(k>monday(today()))return;ui.week=k;render()},
   gen(){ui.gen=!ui.gen;ui.q='';render()},
   genAll(){ui.tab='foods';ui.seg='foods';ui.gen=true;ui.q='';window.scrollTo(0,0);render()},
