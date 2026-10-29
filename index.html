@@ -412,20 +412,20 @@ function readHealth(text){ // lines: yyyy-MM-dd active=N resting=N weight=N (any
     if(lm){const v=num(lm[1]),u=(lm[2]||'').toLowerCase(),kg=u?(u[0]==='k'?v:v*KG_PER_LB):fromDisp(v);if(kg>=20&&kg<=200)o.lean=Math.round(kg*1000)/1000;rest=rest.replace(lm[0],' ')}
     const hasB=/fat|lean/i.test(rest)||fm||lm;rest=rest.replace(/(?:body\s*)?fat\s*%?\s*[=:]?|lean(?:\s*(?:body\s*)?mass)?\s*[=:]?/gi,' ');
     const a=rest.match(new RegExp('active\\s*[=:]?\\s*'+NUM,'i')),r=rest.match(new RegExp('resting\\s*[=:]?\\s*'+NUM,'i'));
-    let active=0,resting=0;
-    if(a||r){active=a?num(a[1]):0;resting=r?num(r[1]):0}
+    let active=0,resting=0,only='';
+    if(a||r){active=a?num(a[1]):0;resting=r?num(r[1]):0;if(!a)only='resting';else if(!r)only='active'}
     else if(!hasW&&!hasB&&!/active|resting/i.test(rest)){ // bare form: exactly two numbers and nothing else, so stray clipboard text is never read as burn
       const m=rest.match(new RegExp('^[\\s,;:]*'+NUM+'[\\s,;/]+'+NUM+'[\\s,;]*$'));
       if(m&&num(m[1])+num(m[2])>=500){active=num(m[1]);resting=num(m[2])}
     }
-    if(active+resting>0&&active+resting<=20000){o.active=r0(active);o.resting=r0(resting)}
-    if(o.kg!=null||o.active!=null||o.fat!=null||o.lean!=null)out.push(o);
+    if(active+resting>0&&active+resting<=20000){if(only!=='resting')o.active=r0(active);if(only!=='active')o.resting=r0(resting)}
+    if(o.kg!=null||o.active!=null||o.resting!=null||o.fat!=null||o.lean!=null)out.push(o);
   }
   return out;
 }
 function applyHealth(rows){ // returns {n: burn days, w: weigh-ins, b: body readings}
   let n=0,w=0,b=0;
-  for(const o of rows){if(o.kg!=null){S.weights[o.k]=o.kg;w++}if(o.active!=null){S.health[o.k]={active:o.active,resting:o.resting};n++}
+  for(const o of rows){if(o.kg!=null){S.weights[o.k]=o.kg;w++}if(o.active!=null||o.resting!=null){const h=S.health[o.k]||{active:0,resting:0};S.health[o.k]={active:o.active!=null?o.active:h.active||0,resting:o.resting!=null?o.resting:h.resting||0};n++}
     if(o.fat!=null||o.lean!=null){const x=S.body[o.k]={...(S.body[o.k]||{})};if(o.fat!=null)x.fat=o.fat;if(o.lean!=null)x.lean=o.lean;b++}}
   if(n||w||b)save();return {n,w,b};
 }
@@ -1226,7 +1226,7 @@ function pasteOut(){
   const txt=ctx.paste.text,items=parseLog(txt,ui.date),ok=items.filter(i=>i.kind!=='err'),hs=readHealth(txt);
   if(!items.length&&!hs.length)return txt.trim()?'<div class="empty">Nothing recognised. Log lines: slot | name | amount. Health lines: 2026-10-11 active=612 resting=1890</div>':'';
   const tag={meal:'saved meal',food:'saved ingredient',new:'new · estimate'},t=sum(ok),u=wUnit();
-  const hrow=o=>`<div class="row"><span class="nm">Apple Health<small>${shortDate(o.k)}${o.active!=null?' · active '+fmt(o.active)+' · resting '+fmt(o.resting):''}${o.kg!=null&&o.active!=null?' · weight '+r1(toDisp(o.kg))+' '+u:''}</small></span><span class="k">${o.active!=null?fmt(o.active+o.resting)+'<small>kcal burn</small>':r1(toDisp(o.kg))+'<small>'+u+' weigh-in</small>'}</span></div>`;
+  const hrow=o=>`<div class="row"><span class="nm">Apple Health<small>${shortDate(o.k)}${o.active!=null||o.resting!=null?(o.active!=null?' · active '+fmt(o.active):'')+(o.resting!=null?' · resting '+fmt(o.resting):''):''}${o.kg!=null&&(o.active!=null||o.resting!=null)?' · weight '+r1(toDisp(o.kg))+' '+u:''}</small></span><span class="k">${o.active!=null||o.resting!=null?fmt((o.active||0)+(o.resting||0))+'<small>kcal '+(o.active!=null&&o.resting!=null?'burn':o.active!=null?'active':'resting')+'</small>':o.kg!=null?r1(toDisp(o.kg))+'<small>'+u+' weigh-in</small>':'<small>body</small>'}</span></div>`;
   const label=ok.length?'Add '+ok.length+' item'+(ok.length>1?'s':'')+' · '+fmt(t.kcal)+' kcal'+(hs.length?' + Health':''):hs.length?'Import Health data':'Nothing to add';
   return `<div class="card list" style="padding:0;overflow:hidden;margin-bottom:12px">${items.map(i=>`<div class="row"><span class="nm">${esc(i.name)}<small class="${i.kind==='err'?'bad':''}">${i.kind==='err'?esc(i.msg):esc(i.slot)+(i.k!==ui.date?' · '+shortDate(i.k):'')+' · '+(i.kind==='meal'?i.scale+'×':(i.amt?esc(i.amt)+' · ':'')+r0(i.g)+' g')+' · '+(i.own?'saved · pasted macros':tag[i.kind])}</small></span><span class="k">${i.kind==='err'?'<small>skipped</small>':fmt(i.kcal)+`<small>P ${r0(i.p)} · C ${r0(i.c)} · F ${r0(i.f)}</small>`}</span></div>`).join('')}${hs.map(hrow).join('')}</div>
   <button class="btn pri full" data-a="plOk" ${ok.length||hs.length?'':'disabled'}>${label}</button>`;
