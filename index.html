@@ -286,7 +286,9 @@ const day=k=>S.log[k]||(S.log[k]={entries:[],complete:false});
 const entries=k=>(S.log[k]&&S.log[k].entries)||[];
 const sum=es=>es.reduce((t,x)=>({kcal:t.kcal+x.kcal,p:t.p+x.p,c:t.c+x.c,f:t.f+x.f}),{kcal:0,p:0,c:0,f:0});
 const mkEntry=(f,g,slot,group)=>({id:uid(),slot,foodId:f.id,name:f.name,g,kcal:f.kcal*g/100,p:f.p*g/100,c:f.c*g/100,f:f.f*g/100,group:group||''});
-const cloneEntry=(e,slot)=>{const f=food(e.foodId);return f?Object.assign(mkEntry(f,e.g,slot||e.slot,e.group),e.amt?{amt:e.amt}:{}):{...e,id:uid(),slot:slot||e.slot}};
+const cloneEntry=(e,slot)=>{const c={id:uid(),slot:slot||e.slot,foodId:e.foodId,name:e.name,g:e.g,kcal:e.kcal,p:e.p,c:e.c,f:e.f,group:e.group||''};if(e.amt)c.amt=e.amt;return c};
+const lastEntry=fid=>{const ks=Object.keys(S.log).sort().reverse();for(const k of ks){const es=entries(k);for(let i=es.length-1;i>=0;i--)if(es[i].foodId===fid)return es[i]}return null};
+const fromLast=(f,g,slot)=>{const l=f.src==='est'?lastEntry(f.id):null,e=mkEntry(f,g,slot);if(l&&l.g>0){const k=g/l.g;Object.assign(e,{kcal:l.kcal*k,p:l.p*k,c:l.c*k,f:l.f*k});if(l.amt&&Math.abs(g-l.g)<0.5)e.amt=l.amt}return e};
 const dayKcal=k=>sum(entries(k)).kcal;
 /* week so far for the week holding k: complete days, open past days, today in progress */
 function weekSoFar(k){
@@ -463,7 +465,7 @@ function parseLog(text,base){
     if(am){const v=num(am[1]),u=am[2].toLowerCase();
       if(!u||/^(g|gr|grams?|ml)$/.test(u))g=v;else if(/^(oz|ounces?)$/.test(u))g=v*OZ;else if(/^(kg|kilograms?)$/.test(u))g=v*1000;else if(/^(lbs?|pounds?)$/.test(u))g=v*1000*KG_PER_LB;else cnt=v;
       if(!said&&u&&!/^(g|gr|grams?)$/.test(u)&&!/^x$/.test(u))said=amt}
-    it.amt=said.slice(0,120);
+    it.amt=said.slice(0,300);
     const meal=findByName(S.meals.filter(m=>mealItems(m).length),name,false);
     if(meal&&!g){it.kind='meal';it.ref=meal;it.scale=cnt||1;const t=mealSum(meal);it.g=0;for(const x of ['kcal','p','c','f'])it[x]=t[x]*it.scale;continue}
     let kc=mac(tail,'kcal|cal|cals|calories');const pr=mac(tail,'p|pro|protein'),cb=mac(tail,'c|carb|carbs'),ft=mac(tail,'f|fat|fats');
@@ -578,7 +580,7 @@ function fits(k){
     g=Math.min(g,L/f.kcal*100);
     g=f.serving&&f.serving.g>0?Math.floor(g/f.serving.g+0.05)*f.serving.g:(g>=20?Math.floor(g/5)*5:Math.floor(g));
     if(g<=0||g<g0*0.4)return;
-    const e=mkEntry(f,g);if(e.kcal>L*1.03)return;
+    const e=fromLast(f,g);if(e.kcal>L*1.03)return;
     out.push({f,g,kcal:e.kcal,p:e.p,c:e.c,fat:e.f,rank:i});
   });
   S.meals.forEach(m=>{
@@ -1064,7 +1066,7 @@ function pickerList(){
   return fs.length?fs.map(f=>foodRow(f,'pickFood')).join(''):'<div class="empty">No foods match.</div>';
 }
 function quickRow(f){ // tap the name for the amount sheet, tap the button to log the last amount straight away
-  const g=lastGrams(f.id),e=mkEntry(f,g);
+  const g=lastGrams(f.id),e=fromLast(f,g);
   return `<div class="row split"><button class="main" data-a="pickFood" data-id="${f.id}"><span class="nm">${esc(f.name)}<small>last ${r0(g)} g · ${fmt(e.kcal)} kcal · P ${r0(e.p)}</small></span></button><button class="q" data-a="quickFood" data-id="${f.id}" aria-label="Add ${r0(g)} g of ${esc(f.name)}">+ ${r0(g)} g</button></div>`;
 }
 function quickMealRow(m){
@@ -1125,7 +1127,7 @@ function openAmount(f,g){
 }
 function unitBtns(){const a=ctx.amt;return [['g','Grams'],['oz','Ounces']].concat(a.food.serving?[['srv',a.food.serving.label]]:[]).map(([u,l])=>`<button data-a="aunit" data-u="${u}" class="${a.unit===u?'on':''}">${esc(l)}</button>`).join('')}
 function amtGrams(){const a=ctx.amt,v=num(a.val);return a.unit==='g'?v:a.unit==='oz'?v*OZ:v*a.food.serving.g}
-function amtOut(){const g=amtGrams(),e=mkEntry(ctx.amt.food,g);return `<div class="kv"><span class="k">${r0(g)} g</span><span class="v">${fmt(e.kcal)} kcal</span></div><div class="kv"><span class="k">Protein · Carbs · Fat</span><span class="v">${r1(e.p)} · ${r1(e.c)} · ${r1(e.f)} g</span></div>`}
+function amtOut(){const g=amtGrams(),e=fromLast(ctx.amt.food,g);return `<div class="kv"><span class="k">${r0(g)} g</span><span class="v">${fmt(e.kcal)} kcal</span></div><div class="kv"><span class="k">Protein · Carbs · Fat</span><span class="v">${r1(e.p)} · ${r1(e.c)} · ${r1(e.f)} g</span></div>`}
 /* meal logging */
 function openMealLog(m,sc){
   ctx.ml={meal:m,items:mealItems(m).map(i=>({foodId:i.foodId,g:r1(i.g*(sc||1)),base:i.g}))};drawMealLog();
@@ -1253,7 +1255,7 @@ const A={
   gen(){ui.gen=!ui.gen;ui.q='';render()},
   genAll(){ui.tab='foods';ui.seg='foods';ui.gen=true;ui.q='';window.scrollTo(0,0);render()},
   snooze(){S.meta.snooze=today();save();render()},
-  quickFood(d,el){const f=food(d.id),g=lastGrams(f.id);if(!g)return openAmount(f);day(ui.date).entries.push(mkEntry(f,g,ctx.pick.slot));save();flash(el);toast(f.name+' added to '+ctx.pick.slot)},
+  quickFood(d,el){const f=food(d.id),g=lastGrams(f.id);if(!g)return openAmount(f);day(ui.date).entries.push(fromLast(f,g,ctx.pick.slot));save();flash(el);toast(f.name+' added to '+ctx.pick.slot)},
   quickMeal(d,el){const m=S.meals.find(x=>x.id===d.id),es=mealItems(m).filter(i=>i.g>0).map(i=>mkEntry(food(i.foodId),i.g,ctx.pick.slot,m.name));if(!es.length)return;day(ui.date).entries.push(...es);save();flash(el);toast(m.name+' added to '+ctx.pick.slot)},
   copySlot(d){const es=entries(d.k).filter(e=>e.slot===d.slot);if(!es.length)return;day(ui.date).entries.push(...es.map(e=>cloneEntry(e)));save();render();toast(d.slot+' copied from '+shortDate(d.k))},
   days(){openDays()},
@@ -1272,14 +1274,14 @@ const A={
   amtOk(){
     const g=amtGrams();if(g<=0)return toast('Enter an amount');const p=ctx.pick,f=ctx.amt.food;
     if(p.mode==='meal'){ctx.meal.items.push({foodId:f.id,g:r1(g)});drawMeal();return}
-    const a=ctx.amt,e=mkEntry(f,r1(g),p.slot),v=num(a.val);
+    const a=ctx.amt,e=fromLast(f,r1(g),p.slot),v=num(a.val);
     if(a.unit==='oz')e.amt=r1(v)+' oz';else if(a.unit==='srv')e.amt=r1(v)+' '+f.serving.label+(v===1||/s$/.test(f.serving.label)?'':'s');
     day(ui.date).entries.push(e);save();closeSheet();render();toast('Added to '+p.slot);
   },
   mlScale(d){ctx.ml.items.forEach(i=>i.g=r1(i.base*+d.n));drawMealLog()},
   mlOk(){const l=ctx.ml,es=l.items.filter(i=>i.g>0).map(i=>mkEntry(food(i.foodId),i.g,ctx.pick.slot,l.meal.name));if(!es.length)return;day(ui.date).entries.push(...es);save();closeSheet();render();toast(l.meal.name+' added')},
   editEntry(d){openEntry(d.id)},
-  entryOk(){const e=ctx.entry,g=num($('#eg').value);if(g<=0)return toast('Enter grams');const k=g/e.g;e.kcal*=k;e.p*=k;e.c*=k;e.f*=k;e.g=g;e.slot=$('#es').value;const a=$('#ea').value.trim().slice(0,120);if(a)e.amt=a;else delete e.amt;save();closeSheet();render()},
+  entryOk(){const e=ctx.entry,g=num($('#eg').value);if(g<=0)return toast('Enter grams');const k=g/e.g;e.kcal*=k;e.p*=k;e.c*=k;e.f*=k;e.g=g;e.slot=$('#es').value;const a=$('#ea').value.trim().slice(0,300);if(a)e.amt=a;else delete e.amt;save();closeSheet();render()},
   entryDel(){const d=day(ui.date),old=d.entries,e=ctx.entry;d.entries=old.filter(x=>x.id!==e.id);save();closeSheet();render();toast(e.name+' deleted',()=>{d.entries=old;save();render()})},
   complete(){const d=day(ui.date);if(!d.complete&&!d.entries.length)return toast('Nothing logged for this day');d.complete=!d.complete;save();render();toast(d.complete?'Day complete. It now counts toward calibration':'Day reopened')},
   copyPrev(){
@@ -1338,7 +1340,7 @@ const A={
   fitAdd(d){
     const slot=slotNow();
     if(d.m){const m=S.meals.find(x=>x.id===d.m),es=mealItems(m).filter(i=>i.g>0).map(i=>mkEntry(food(i.foodId),r1(i.g*+d.s),slot,m.name));day(ui.date).entries.push(...es);save();render();return toast(m.name+' added to '+slot)}
-    const f=food(d.f);day(ui.date).entries.push(mkEntry(f,+d.g,slot));save();render();toast(f.name+' added to '+slot);
+    const f=food(d.f);day(ui.date).entries.push(fromLast(f,+d.g,slot));save();render();toast(f.name+' added to '+slot);
   },
   fitOpen(d){
     ctx.pick={mode:'log',slot:slotNow(),tab:'recent',q:'',usda:[],msg:''};
